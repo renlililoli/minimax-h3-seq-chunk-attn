@@ -1,3 +1,4 @@
 [submodule "extern/DiffSynth-Studio"]
 	path = extern/DiffSynth-Studio
-	url = https://github.com/modelscope/DiffSynth-Studio
+	url = https://github.com/renlililoli/minimax-h3-seq-chunk-attn.git
+	branch = diffsynth-streaming
