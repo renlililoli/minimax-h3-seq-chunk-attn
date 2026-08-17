@@ -361,3 +361,4 @@ GPU:   当前算子权重 + Q tile + KV tile + online-softmax 状态 + MLP tile
 V0 的 baseline、正确性验证、4GB 显存模拟、长序列扫长和 chunk 消融实验见：
 
 - [MiniMax-H3 V0 序列 Chunk 化对比实验方案](./minimax_h3_streaming_benchmark_plan.md)
+- [MiniMax-H3 V0：8GB、61K Tokens 端到端视频生成实验说明](./minimax_h3_8gb_61k_end_to_end_experiment.md)
