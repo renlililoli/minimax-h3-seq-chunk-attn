@@ -1,0 +1,24 @@
+services:
+
+  diffsynth:
+    build:
+      context: .
+      dockerfile: Dockerfile.diffsynth
+    image: diffsynth:cu128
+    container_name: diffsynth
+    working_dir: /workspace
+    volumes:
+      - ./extern/DiffSynth-Studio:/opt/DiffSynth-Studio
+      - /scratch/grzhu/weights/video:/models
+      - ./workspace:/workspace
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    shm_size: "128gb"
+    tty: true
+    stdin_open: true
+    command: ["bash"]

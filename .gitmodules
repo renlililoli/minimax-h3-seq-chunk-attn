@@ -1,0 +1,3 @@
+[submodule "extern/DiffSynth-Studio"]
+	path = extern/DiffSynth-Studio
+	url = https://github.com/modelscope/DiffSynth-Studio

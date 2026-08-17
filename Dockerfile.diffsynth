@@ -1,0 +1,9 @@
+FROM comfyui:cu128
+
+WORKDIR /opt/DiffSynth-Studio
+
+COPY extern/DiffSynth-Studio/ /opt/DiffSynth-Studio/
+
+RUN python -m pip install --no-cache-dir -e .
+
+RUN useradd -u 1091 -g 1102 -m -s /bin/bash app
