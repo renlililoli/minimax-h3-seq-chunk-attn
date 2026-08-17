@@ -355,3 +355,9 @@ GPU:   当前算子权重 + Q tile + KV tile + online-softmax 状态 + MLP tile
 - 真实 NF4 前 5 层、480×832、124 帧在 4GiB allocator 硬上限下完成 1 个 denoise step；
   `projection/q/kv = 512/512/256` 时，PyTorch allocated 峰值约 1865MiB，reserved
   峰值约 2134MiB。该结果用于 V0 工程验证，不代表完整 50 层性能。
+
+## 9. 评测方案
+
+V0 的 baseline、正确性验证、4GB 显存模拟、长序列扫长和 chunk 消融实验见：
+
+- [MiniMax-H3 V0 序列 Chunk 化对比实验方案](./minimax_h3_streaming_benchmark_plan.md)

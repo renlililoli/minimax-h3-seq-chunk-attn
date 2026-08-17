@@ -19,6 +19,9 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
     shm_size: "128gb"
+    # Required by numactl --membind for formal benchmark workers.
+    cap_add:
+      - SYS_NICE
     tty: true
     stdin_open: true
     command: ["bash"]
