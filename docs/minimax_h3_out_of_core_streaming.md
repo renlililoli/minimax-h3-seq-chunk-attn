@@ -1,6 +1,6 @@
 # MiniMax-H3 Out-of-Core（Ring-style Streaming）推理方案设计
 
-> 状态：设计文档（未实现）
+> 状态：V0 reference 已实现（分支 `feature/minimax-h3-sequence-streaming`）
 > 适用代码：`extern/DiffSynth-Studio`（diffsynth 2.1.2，commit 6343ded）
 > 目标硬件：单 GPU（RTX 5090 32GB）+ 大容量 CPU RAM
 
@@ -344,3 +344,14 @@ GPU:   当前算子权重 + Q tile + KV tile + online-softmax 状态 + MLP tile
 ```
 
 一旦 V0 reference 跑通，后续主要工程问题不再是「能不能跑」，而是**如何把 CPU↔GPU traffic 和 attention kernel 做快**。
+
+### V0 实现状态（2026-08-17）
+
+- 已实现按 `cu_seqlens` 分 segment 的 FP32 online-softmax reference。
+- 已实现 QKV projection、out projection 和 two-pass MLP 的 sequence chunk 调度。
+- 已实现普通 Linear 与 NF4 quantized wrapper 的可重入 computation lease。
+- pipeline 参数默认关闭，原有 full-sequence 路径保持不变。
+- 单元测试覆盖 attention parity、完整 DiT block parity 和 lease 生命周期。
+- 真实 NF4 前 5 层、480×832、124 帧在 4GiB allocator 硬上限下完成 1 个 denoise step；
+  `projection/q/kv = 512/512/256` 时，PyTorch allocated 峰值约 1865MiB，reserved
+  峰值约 2134MiB。该结果用于 V0 工程验证，不代表完整 50 层性能。
