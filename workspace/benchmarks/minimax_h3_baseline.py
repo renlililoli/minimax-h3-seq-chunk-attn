@@ -17,6 +17,7 @@ import torch
 from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline, ModelConfig
 from diffsynth.core.attention.streaming import StreamingStats
 from diffsynth.utils.data.audio_video import write_video_audio
+from benchmarks.minimax_h3_bench.protocol import atomic_write_json, classify_exception
 
 
 PROMPT = (
@@ -353,10 +354,9 @@ def main():
         result["max_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         result["status"] = "success"
     except BaseException as exc:
-        result["status"] = "failed"
-        result["error"] = repr(exc)
+        result["status"] = classify_exception(exc)
+        result["failure_message"] = f"{type(exc).__name__}: {exc}"
         result["traceback"] = traceback.format_exc()
-        raise
     finally:
         if progress is not None:
             result["denoise"] = stats(progress.step_seconds)
@@ -371,7 +371,7 @@ def main():
             result["observed_peak_reserved_mib"] = torch.cuda.max_memory_reserved() / 2**20
         result["max_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         result["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
-        json_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+        atomic_write_json(json_path, result)
         print(f"BENCH_RESULT {json_path}", flush=True)
 
 
