@@ -17,7 +17,12 @@ import torch
 from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline, ModelConfig
 from diffsynth.core.attention.streaming import StreamingStats
 from diffsynth.utils.data.audio_video import write_video_audio
-from benchmarks.minimax_h3_bench.protocol import atomic_write_json, classify_exception
+from benchmarks.minimax_h3_bench.protocol import (
+    ProcessSampler,
+    atomic_write_json,
+    classify_exception,
+    initialize_vram_budget,
+)
 
 
 PROMPT = (
@@ -148,6 +153,12 @@ def main():
         help="Hard-cap the PyTorch CUDA allocator to this fraction of physical VRAM.",
     )
     parser.add_argument(
+        "--target-vram-mib",
+        type=int,
+        default=None,
+        help="NVML-aware whole-process budget; preferred for formal 4/6/8GB runs.",
+    )
+    parser.add_argument(
         "--vram-reserve-gib",
         type=float,
         default=2.0,
@@ -164,22 +175,34 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.target_vram_mib is not None and args.simulated_vram_gib is not None:
+        raise ValueError("target-vram-mib and simulated-vram-gib are mutually exclusive")
+
     physical_vram_bytes = torch.cuda.get_device_properties(0).total_memory
     physical_vram_gib = physical_vram_bytes / 2**30
-    effective_vram_gib = args.simulated_vram_gib or physical_vram_gib
+    budget = None
+    if args.target_vram_mib is not None:
+        budget = initialize_vram_budget(args.target_vram_mib)
+        effective_vram_gib = args.target_vram_mib / 1024.0
+    else:
+        effective_vram_gib = args.simulated_vram_gib or physical_vram_gib
     if effective_vram_gib > physical_vram_gib:
         raise ValueError(
             f"simulated VRAM ({effective_vram_gib} GiB) exceeds physical VRAM "
             f"({physical_vram_gib:.3f} GiB)"
         )
-    if effective_vram_gib <= args.vram_reserve_gib:
+    if budget is None and effective_vram_gib <= args.vram_reserve_gib:
         raise ValueError("simulated VRAM must exceed the requested reserve")
-    if args.simulated_vram_gib is not None:
+    if budget is None and args.simulated_vram_gib is not None:
         torch.cuda.set_per_process_memory_fraction(
             effective_vram_gib / physical_vram_gib,
             device=0,
         )
-    layer_vram_limit_gib = effective_vram_gib - args.vram_reserve_gib
+    layer_vram_limit_gib = (
+        budget.vram_limit_gib
+        if budget is not None
+        else effective_vram_gib - args.vram_reserve_gib
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -215,6 +238,8 @@ def main():
     video_decode_samples = []
     audio_decode_samples = []
     captured_latents = {}
+    sampler = ProcessSampler()
+    sampler.__enter__()
     try:
         model_dir = Path(args.model_dir)
         required = [
@@ -358,6 +383,7 @@ def main():
         result["failure_message"] = f"{type(exc).__name__}: {exc}"
         result["traceback"] = traceback.format_exc()
     finally:
+        sampler.__exit__(None, None, None)
         if progress is not None:
             result["denoise"] = stats(progress.step_seconds)
             result["denoise_peak_allocated_mib"] = progress.peak_allocated_mib
@@ -370,6 +396,23 @@ def main():
             result["observed_peak_allocated_mib"] = torch.cuda.max_memory_allocated() / 2**20
             result["observed_peak_reserved_mib"] = torch.cuda.max_memory_reserved() / 2**20
         result["max_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        result["nvml_process_peak_mib"] = sampler.nvml_peak_mib
+        result["cpu_rss_peak_mib"] = sampler.rss_peak_mib
+        if budget is not None:
+            result["memory_policy"].update({
+                "target_vram_mib": budget.target_mib,
+                "context_mib": budget.context_mib,
+                "allocator_limit_mib": budget.allocator_limit_mib,
+                "pytorch_allocator_fraction": budget.allocator_fraction,
+                "diffsynth_vram_limit_gib": budget.vram_limit_gib,
+                "safety_margin_mib": budget.safety_margin_mib,
+            })
+            if result["status"] == "success" and sampler.nvml_peak_mib > budget.target_mib:
+                result["status"] = "budget_exceeded"
+                result["failure_message"] = (
+                    f"NVML process peak {sampler.nvml_peak_mib:.1f} MiB exceeded "
+                    f"target {budget.target_mib} MiB"
+                )
         result["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
         atomic_write_json(json_path, result)
         print(f"BENCH_RESULT {json_path}", flush=True)
