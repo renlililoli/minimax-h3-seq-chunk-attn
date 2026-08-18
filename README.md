@@ -57,6 +57,28 @@ flat through the matching 14-step checkpoint inside an 8GiB target.  Final
 `seqattn` numbers will be published only after all 50 steps, Video VAE decode,
 Audio VAE decode, and MP4 mux complete.
 
+## Native memory residency
+
+The native run also uses CPU/DRAM weight offload; it is not keeping the whole
+checkpoint in GPU memory.  During the denoise loop only the DiT is active.  The
+text encoder and both VAEs are offloaded and are not part of the 30,876MiB peak.
+
+| During native DiT denoising | CPU DRAM | GPU HBM |
+|---|---|---|
+| Model weights | Inactive models and offloaded DiT NF4 backing weights | Prepared/current DiT layers |
+| Attention activations | — | Full hidden, residual, Q, K, V and attention output |
+| MLP activations | — | Full `fc1`, gate, up and product tensors |
+| Runtime | Python/checkpoint backing | CUDA context, FA workspace and Torch reserved cache |
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/renlililoli/stream-attn/main/docs/assets/minimax-h3-native-residency.svg" alt="Native MiniMax-H3 memory residency" width="100%">
+</p>
+
+For 132,288 BF16 tokens, full QKV is approximately 5.299GiB and the MLP `fc1`
+output is 7.065GiB.  The native failure requests 3.53GiB for the complete
+`SiLU(gate) * up` result.  Thus the immediate OOM is a sequence-activation
+allocation, not simultaneous residency of the encoder, DiT, and decoders.
+
 ## Repository layout
 
 | Path | Purpose |

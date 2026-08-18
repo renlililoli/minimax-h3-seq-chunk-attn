@@ -192,7 +192,7 @@ streaming fallback: pure PyTorch FP32 online softmax
 
 Main repository branch: feature/minimax-h3-sequence-streaming
 DiffSynth submodule commit: 653709f
-seqattn submodule commit: db21e1f
+seqattn submodule commit: 6d58f86
 ```
 
 ## 5. 8GB 显存预算定义
@@ -255,6 +255,91 @@ Video decode 完成
 
 因此“模型总参数很大”不等于“所有模型权重同时占用 8GB GPU”。本实验测试的主要矛盾
 是单个 DiT block 中随序列长度增长的 activation 峰值。
+
+### 6.1 原生 full-sequence 实验的 CPU/GPU 驻留关系
+
+这里的原生版本并不是“完全不 offload、把整个 checkpoint 放进显存”的弱 baseline。
+其完整实验配置同样为：
+
+```text
+offload_device = cpu
+disk offload   = disabled
+activation_streaming = false
+```
+
+DiffSynth 按 pipeline 阶段切换 active model：
+
+| 阶段 | GPU active model | CPU DRAM 中的非 active 大模型 |
+|---|---|---|
+| Text/prompt 处理 | Text Encoder | DiT、Video VAE、Audio VAE |
+| 50-step denoise | **DiT** | Text Encoder、Video VAE、Audio VAE |
+| Video decode | Video VAE | DiT、Text Encoder、Audio VAE |
+| Audio decode | Audio VAE | DiT、Text Encoder、Video VAE |
+
+因此原生 30GB 以上的 DiT 峰值不能解释为“Encoder + DiT + 两个 VAE 权重同时常驻”。
+实际 OOM 发生在第 15 个 denoise step 开始后的 DiT MLP 中，此时两个 VAE decode 还
+没有开始。
+
+原生 denoise 阶段的驻留关系为：
+
+| 对象 | CPU DRAM | GPU HBM |
+|---|---|---|
+| NF4 checkpoint / 非 active 模型权重 | backing store | 不常驻 |
+| 未进入 preparing 状态的 DiT layer 权重 | backing store | 不常驻 |
+| 当前/prepared DiT layer 权重 | CPU 有 backing | 当前计算副本或 prepared 副本 |
+| Video/audio latent、packed hidden | — | 完整序列 tensor |
+| Q/K/V | — | 完整序列 Q/K/V |
+| Attention output | — | 完整序列 output，再执行 out projection |
+| MLP `fc1` / gate / up / product | — | 完整序列 intermediate |
+| CUDA context、FA workspace | — | runtime 占用 |
+| Torch reserved/cache | — | 属于进程 NVML 显存，即使暂未 allocated |
+
+132,288-token、BF16、H3 真实维度下，几个关键 activation 的孤立尺寸为：
+
+| Tensor | 计算 | 大小 |
+|---|---:|---:|
+| hidden / residual | `132288 × 5376 × 2B` | 1.325GiB |
+| 单个 Q/K/V | `132288 × 56 × 128 × 2B` | 1.766GiB |
+| 合并 QKV | 上项 × 3 | 5.299GiB |
+| attention output | `132288 × 56 × 128 × 2B` | 1.766GiB |
+| MLP `fc1` output | `132288 × 2 × 14336 × 2B` | 7.065GiB |
+| gate 或 up | `132288 × 14336 × 2B` | 3.532GiB |
+| `SiLU(gate) * up` 结果 | `132288 × 14336 × 2B` | 3.532GiB |
+
+原生正式实验的 traceback 正好停在：
+
+```python
+hidden = nn.functional.silu(gate) * up
+```
+
+失败申请为 3.53GiB，与完整 `[132288, 14336]` BF16 MLP product 的理论尺寸一致。
+所以直接触发 OOM 的是 full-sequence activation；与此同时，进程总显存还包含当前权重、
+临时 weight cast/rebuild、FlashAttention workspace、CUDA context 和 allocator cache。
+
+高频 benchmark 在原生 step 14 边界记录到：
+
+```text
+DiT named CUDA parameter/buffer storage: 1030.8MiB
+Torch allocated:                           4222.7MiB
+Torch reserved:                          30254.0MiB
+PID NVML:                                30876.0MiB
+```
+
+其中 1030.8MiB 只统计可从 DiT `parameters()/buffers()` 枚举到的去重 CUDA storage，
+不包括完整序列 activation、临时计算权重、workspace、CUDA context 或 allocator cache。
+因此它不能拿来代替 NVML 进程峰值。
+
+Streaming 与原生的核心差别不是模型阶段调度，而是 sequence activation 的驻留位置：
+
+| Sequence state | 原生 full-sequence | Streaming / seqattn |
+|---|---|---|
+| hidden/residual | 完整 GPU tensor | 完整 pinned CPU tensor + GPU chunk |
+| Q/K/V | 完整 GPU tensor | 完整 pinned CPU backing + resident Q / streamed KV |
+| attention output | 完整 GPU tensor | GPU tile 直接进入 out projection/gate/residual |
+| MLP intermediate | 完整 GPU tensor | 完整 CPU intermediate + GPU fc1/fc2 chunk |
+
+这也解释了为什么 Streaming 的 CPU RSS 更高，但 step-end GPU 显存可以维持在约
+4.43GiB、within-step 峰值维持在约 7.16GiB。
 
 Streaming 的权重驻留还增加了两个跨 denoise step 约束：
 
