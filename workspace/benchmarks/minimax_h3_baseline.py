@@ -123,10 +123,19 @@ class StepTimer:
         self.peak_reserved_mib = torch.cuda.max_memory_reserved() / 2**20
 
 
-def timed_method(obj, method_name, samples):
+def timed_method(
+    obj,
+    method_name,
+    samples,
+    *,
+    capture_key=None,
+    captured_latents=None,
+):
     original = getattr(obj, method_name)
 
     def wrapper(*args, **kwargs):
+        if capture_key is not None and captured_latents is not None and args:
+            captured_latents[capture_key] = args[0].detach().to("cpu")
         synchronize()
         started = time.perf_counter()
         result = original(*args, **kwargs)
@@ -419,8 +428,20 @@ def main():
             pipe.video_vae.decode_video = skip_video_decode
             pipe.audio_vae.decode_audio = skip_audio_decode
         else:
-            timed_method(pipe.video_vae, "decode_video", video_decode_samples)
-            timed_method(pipe.audio_vae, "decode_audio", audio_decode_samples)
+            timed_method(
+                pipe.video_vae,
+                "decode_video",
+                video_decode_samples,
+                capture_key="video" if args.save_latents else None,
+                captured_latents=captured_latents,
+            )
+            timed_method(
+                pipe.audio_vae,
+                "decode_audio",
+                audio_decode_samples,
+                capture_key="audio" if args.save_latents else None,
+                captured_latents=captured_latents,
+            )
 
         torch.cuda.reset_peak_memory_stats()
         synchronize()
@@ -499,6 +520,10 @@ def main():
         result["traceback"] = traceback.format_exc()
     finally:
         sampler.__exit__(None, None, None)
+        if args.save_latents and captured_latents and "latent_path" not in result:
+            latent_path = output_dir / f"{run_name}_latents.pt"
+            torch.save(captured_latents, latent_path)
+            result["latent_path"] = str(latent_path)
         if progress is not None:
             result["denoise"] = stats(progress.step_seconds)
             result["denoise_peak_allocated_mib"] = progress.peak_allocated_mib
