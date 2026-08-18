@@ -130,12 +130,25 @@ def timed_method(
     *,
     capture_key=None,
     captured_latents=None,
+    capture_path=None,
 ):
     original = getattr(obj, method_name)
+    resolved_capture_path = Path(capture_path) if capture_path is not None else None
 
     def wrapper(*args, **kwargs):
         if capture_key is not None and captured_latents is not None and args:
-            captured_latents[capture_key] = args[0].detach().to("cpu")
+            captured = args[0].detach().to("cpu")
+            captured_latents[capture_key] = captured
+            if resolved_capture_path is not None:
+                temporary_path = resolved_capture_path.with_suffix(
+                    resolved_capture_path.suffix + ".tmp"
+                )
+                torch.save(captured, temporary_path)
+                os.replace(temporary_path, resolved_capture_path)
+                print(
+                    f"BENCH_LATENT_SAVED {capture_key} {resolved_capture_path}",
+                    flush=True,
+                )
         synchronize()
         started = time.perf_counter()
         result = original(*args, **kwargs)
@@ -428,12 +441,28 @@ def main():
             pipe.video_vae.decode_video = skip_video_decode
             pipe.audio_vae.decode_audio = skip_audio_decode
         else:
+            video_predecode_path = (
+                output_dir / f"{run_name}_video_predecode_latents.pt"
+                if args.save_latents
+                else None
+            )
+            audio_predecode_path = (
+                output_dir / f"{run_name}_audio_predecode_latents.pt"
+                if args.save_latents
+                else None
+            )
+            if args.save_latents:
+                result["predecode_latent_paths"] = {
+                    "video": str(video_predecode_path),
+                    "audio": str(audio_predecode_path),
+                }
             timed_method(
                 pipe.video_vae,
                 "decode_video",
                 video_decode_samples,
                 capture_key="video" if args.save_latents else None,
                 captured_latents=captured_latents,
+                capture_path=video_predecode_path,
             )
             timed_method(
                 pipe.audio_vae,
@@ -441,6 +470,7 @@ def main():
                 audio_decode_samples,
                 capture_key="audio" if args.save_latents else None,
                 captured_latents=captured_latents,
+                capture_path=audio_predecode_path,
             )
 
         torch.cuda.reset_peak_memory_stats()
