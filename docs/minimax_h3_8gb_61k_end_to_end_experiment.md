@@ -1,13 +1,14 @@
-# MiniMax-H3 V0：8GB、61K Tokens 端到端视频生成实验说明
+# MiniMax-H3：8GB、61K Tokens 序列 Streaming 端到端实验说明
 
-> 文档状态：正式 50-step 实验结果待确认
+> 文档状态：BF16 fused streaming、跨 step 显存修复和 5-step soak 已完成；最终
+> 50-step + VAE decode 正式任务正在执行
 >
-> 最近一次 5090 节点观测：2026-08-17 08:03 UTC（北京时间 16:03）
+> 实验日期：2026-08-17 UTC
 >
 > 当前结论：在相同 8GB 整进程显存预算和 61,312-token 输入下，full-sequence
-> baseline 在首个 DiT step 因 MLP activation OOM；Streaming V0 已完成完整
-> 50-block 单步验证。正式 50-step 生成在最近一次 5090 节点观测时仍在运行，尚无
-> 可确认的最终 VAE decode 和 MP4 结果。
+> baseline 在首个 DiT forward 的 full Q/K/V 路径 OOM；优化后的 Streaming 已完成
+> 完整 50-block、61,312-token 的 5-step soak，NVML 峰值 6374MiB。正式 50-step
+> 生成仍须以最终 JSON、双 VAE decode 和 MP4/ffprobe 结果为准。
 
 ## 1. 实验目的
 
@@ -20,7 +21,7 @@ full-sequence DiT 完成、而 CPU-backed activation streaming 可以继续工�
 
 1. 在严格的 8GB 整进程显存预算下，full-sequence baseline 是否因序列 activation
    OOM？
-2. Streaming V0 是否能在相同 checkpoint、输入、seed 和权重 offload 策略下完成
+2. Fused Streaming 是否能在相同 checkpoint、输入、seed 和权重 offload 策略下完成
    完整 50-block DiT forward？
 3. Streaming 的实际 GPU 显存、CPU RAM 和延迟代价是多少？
 4. Streaming 是否最终能完成 50 denoise steps、Video VAE decode、Audio VAE decode
@@ -28,12 +29,13 @@ full-sequence DiT 完成、而 CPU-backed activation streaming 可以继续工�
 5. Text Encoder 和 VAE Decoder 为什么没有与 full-sequence DiT 相同的 activation
    OOM 行为？
 
-预期能够支持的结论为：
+当前已经能够支持的结论为：
 
 > 在相同 8GB 整进程显存预算下，61,312-token full-sequence MiniMax-H3 DiT 因完整
-> 序列 MLP activation OOM；V0 将 QKV、attention output 和 MLP intermediate 转移到
-> CPU DRAM，并按 tile 在 GPU 上计算，从而完成相同输入的完整 DiT forward。端到端
-> 成功仍以 50-step 任务完成真实 VAE decode 并生成 MP4 为准。
+> 序列 QKV/MLP activation OOM；Streaming 将 QKV、attention output 和 MLP
+> intermediate 转移到 CPU DRAM，并按 tile 在 GPU 上计算，从而完成相同输入的完整
+> DiT forward 和 5-step soak。端到端成功仍以 50-step 任务完成真实 VAE decode 并
+> 生成 MP4 为准。
 
 ## 2. 实验工作流
 
@@ -185,13 +187,12 @@ Torch:        2.10.0+cu128
 CUDA runtime: 12.8
 bitsandbytes: 0.50.1
 baseline attention: FlashAttention 2
-streaming attention: PyTorch FP32 online softmax
+streaming attention: BF16 FlashAttention 2 tiles + FP32 LSE/Triton merge
+streaming fallback: pure PyTorch FP32 online softmax
 
-Main repository:
-9ee99a4f7d6eb8c19270953b543eb6aa7b115ddf
-
-DiffSynth submodule:
-2090652a25590daa4a09681c3ceb9a650b78de7a
+Main repository branch: feature/minimax-h3-sequence-streaming
+DiffSynth submodule commit: 653709f
+seqattn submodule commit: db21e1f
 ```
 
 ## 5. 8GB 显存预算定义
@@ -255,6 +256,18 @@ Video decode 完成
 因此“模型总参数很大”不等于“所有模型权重同时占用 8GB GPU”。本实验测试的主要矛盾
 是单个 DiT block 中随序列长度增长的 activation 峰值。
 
+Streaming 的权重驻留还增加了两个跨 denoise step 约束：
+
+1. 第一个完整 denoise step 允许 DiffSynth 按原 `vram_limit=4GiB` 策略建立 GPU
+   权重工作集；
+2. 第一步结束后冻结该工作集，后续 step 不再把新的 CPU-backed layer 变为 GPU
+   常驻；
+3. 每个 streaming step 结束后执行 `empty_cache()`，释放未占用 allocator cache；
+4. 下一次独立 pipeline generation 开始时重新允许建立工作集。
+
+这不是 disk offload，也不是把 `vram_limit` 降低到 4GB 以下。权重 backing store 仍为
+CPU DRAM；冻结只用于避免 50-step 过程中常驻权重集合和 allocator reserved 逐步扩大。
+
 ## 7. Baseline 与 Streaming 实现差异
 
 ### 7.1 Full-sequence baseline
@@ -293,14 +306,14 @@ dtype       = BF16
 在 `silu(gate) * up` 时还需 gate/up、SiLU output、乘法 output、residual、当前层权重
 和 CUDA workspace，因此 full-sequence 工作集会超过 8GB。
 
-### 7.2 Streaming V0
+### 7.2 Streaming 实现
 
-V0 每个 block 的阶段：
+Streaming 每个 block 的阶段：
 
 | Phase | 内容 |
 |---|---|
 | A | chunked norm、AdaLN、QKV projection，Q/K/V 写入 pinned CPU RAM |
-| B | Q/KV tiled FP32 online-softmax attention，KV 多次从 CPU 重扫 |
+| B | Q/KV tiled BF16 FlashAttention 2；FP32 LSE/output 跨 KV tile 合并 |
 | C | attention output tile、out projection、gate、residual，结果写回 CPU |
 | D1 | chunked fc1、gate/up、SiLU，完整 MLP intermediate 存 CPU |
 | D2 | chunked fc2、gate、residual，next hidden 存 CPU |
@@ -309,8 +322,8 @@ V0 每个 block 的阶段：
 
 ```text
 projection_chunk = 2048
-q_block          = 4096
-kv_block         = 1024
+q_block          = 16384
+kv_block         = 4096
 ```
 
 单个 fc1 GPU tile：
@@ -325,90 +338,187 @@ kv_block         = 1024
 61,312 * 14,336 * 2 bytes ≈ 1.64GiB CPU RAM
 ```
 
-V0 没有消除 activation，而是把完整序列 activation 从 GPU 转移到 CPU DRAM，用
-时间、CPU RAM 和 PCIe traffic 换取较低 GPU 峰值。
+Phase B 使用两组 GPU KV buffer、独立 CUDA copy stream 和 event：当前 KV tile 计算时
+预取下一 tile。每个 FlashAttention tile 使用 BF16 Q/K/V，返回 FP32 softmax LSE；
+Triton kernel 将 tile output 和 LSE 合并进 FP32 running output，最后转回 BF16 并
+D2H。`auto` backend 在 CUDA + BF16/FP16 + FlashAttention/Triton 可用时选择该路径，
+否则回退纯 PyTorch reference。
 
-## 8. 61K Attention Tile 选择
+Streaming 没有消除 activation，而是把完整序列 activation 从 GPU 转移到 CPU DRAM，
+用 CPU RAM、PCIe traffic 和额外延迟换取较低 GPU 峰值。
 
-在 full-DiT 测试前，对 61,312-token attention 测试四组 tile：
+## 8. 61K Full-DiT Tile 选择与加速
 
-| Q block | KV block | 状态 | 时间 | NVML peak | Torch reserved |
-|---:|---:|---|---:|---:|---:|
-| 2048 | 512 | success | 9.357s | 1688MiB | 1068MiB |
-| 2048 | 1024 | success | 9.116s | 2640MiB | 2020MiB |
-| 4096 | 512 | success | 8.763s | 2740MiB | 2120MiB |
-| 4096 | 1024 | success | 8.318s | 4532MiB | 3912MiB |
+使用完整 50-block DiT、61,312 tokens、1 step、8GB budget 测试 fused backend：
 
-选择 attention latency 最低的 `4096/1024`。没有继续增大 tile，因为完整 DiT 单步
-NVML 峰值已达到 7704MiB，只剩约 488MiB 物理余量，需要为 allocator 波动和最终
-VAE decode 保留空间。
+| Q block | KV block | 状态 | Denoise step | NVML peak |
+|---:|---:|---|---:|---:|
+| 4096 | 1024 | success | 94.461s | 5646MiB |
+| 8192 | 2048 | success | 79.809s | 5700MiB |
+| 16384 | 2048 | success | 77.272s | 5746MiB |
+| 16384 | 4096 | success | 72.843s | 5744MiB |
+
+最终锁定：
+
+```text
+projection_chunk = 2048
+q_block          = 16384
+kv_block         = 4096
+```
+
+旧 pure-PyTorch V0 的同形状单步为 450.329s；锁定配置的开发测量为 72.843s，约
+`6.18x` 加速。后续无 instrumentation 的 5-step soak 中，首步 66.905s，step 2–5
+稳定在约 61.9s。不同 run 的绝对延迟会受到主机 DRAM/NUMA 和 GPU 状态影响，因此
+正文同时保留原始 JSON，而不只报告单一最佳数字。
 
 ## 9. 已完成结果
 
-### 9.1 Baseline：50-step 配置，首步 OOM
+### 9.1 Baseline：首个 full-sequence forward OOM
 
-正式 baseline 命令配置了 50 steps；首个 DiT forward 已 OOM，后续 steps 和 VAE
-decode 没有执行。
+最终代码重跑的 baseline 配置了 50 steps，但首个 DiT forward 未完成：
 
 ```text
 status:                    oom
-nvml_process_peak_mib:     7432
-torch peak allocated:      6504.8MiB
-torch peak reserved:       6810MiB
-cpu_rss_peak_mib:          18001.8MiB
+completed denoise steps:   0
+nvml_process_peak_mib:     8078
+torch peak allocated:      6634.4MiB
+torch peak reserved:       7456MiB
+cpu_rss_peak_mib:          18002.6MiB
 failed allocation request: 836MiB
-failure location:          MLP silu(gate) * up
+failure location:          full Q/K/V path, k_norm RMSNorm
 ```
 
-物理 GPU 仍有空闲显存，是因为实验进程被限制为 8GB；PyTorch allowance 约为
-7.39GiB，其余用于 CUDA context 和 safety margin。
+物理 32GB GPU 仍显示有空闲，是因为实验进程被限制为 8GB；PyTorch allowance 约
+7.39GiB。Baseline 在完整 Q/K/V 阶段已经没有足够空间创建下一个 836MiB tensor，
+因此没有进入后续 denoise step 或 VAE decode。
 
 结果文件：
 
 ```text
 workspace/benchmarks/results/
-final8_baseline_full_f515_s50_480x832_f515_s50_20260817T074648Z.json
+final8_baseline_full_f515_s50_recheck_480x832_f515_s50_20260817T124244Z.json
 ```
 
-### 9.2 Streaming：完整 50-block 单步成功
+### 9.2 从 reference V0 到 fused backend
+
+同为完整 50-block、61,312-token、1-step：
+
+| 实现 | Denoise step | NVML peak | 说明 |
+|---|---:|---:|---|
+| PyTorch FP32 online-softmax V0 | 450.329s | 7704MiB | reference |
+| BF16 Flash2 + Triton LSE merge | 72.843s | 5744MiB | 开发调参点 |
+| 最终 instrumented run | 67.307s | 5610MiB | phase timing，不作主延迟 |
+
+开发调参点相对旧 V0 约 `6.18x` 加速。最终 steady-state 5-step 中 step 2–5 约
+61.9s；跨独立进程的绝对差异可能来自 DRAM/NUMA、权重工作集建立和 GPU 状态。
+
+### 9.3 旧多步失败与修复
+
+两次旧 50-step 尝试均保留为失败证据：
+
+1. pure-PyTorch V0 在完成 5 steps 后因 allocator/residency headroom 耗尽而 OOM；
+2. 初版 fused backend 完成 47 steps，第 48 个 forward 的 FlashAttention tile 在申请
+   224MiB 时 OOM，NVML 峰值 8166MiB；其单步从约 72s 逐渐升到 100–110s。
+
+最终修复包括：
+
+- final layer 只对 video/audio output positions 分 chunk 投影，不再把完整
+  `[61,312, 5,376]` hidden 搬回 GPU；
+- 第一个完整 denoise step 后冻结 DiffSynth GPU 权重工作集；
+- 后续 step 禁止新 layer 进入 preparing/GPU 常驻状态；
+- 每个 streaming step 结束后释放未占用 CUDA allocator cache；
+- benchmark 在失败路径也保留已完成 step 的逐步显存和时间。
+
+### 9.4 最终 5-step 稳定性 soak
 
 ```text
 status:                    success
-denoise step:              450.329s
-pipeline total:            456.993s
-nvml_process_peak_mib:     7704
-torch peak allocated:      5371.7MiB
-torch peak reserved:       7082MiB
-cpu_rss_peak_mib:          41499.3MiB
+step times:                66.905, 61.863, 61.897, 61.885, 61.967s
+mean step:                 62.904s
+nvml_process_peak_mib:     6374
+torch peak allocated:      5536.5MiB
+torch peak reserved:       5684MiB
+cpu_rss_peak_mib:          43616.7MiB
+logical H2D per step:      611.88GiB
+logical D2H per step:      305.69GiB
+logical CPU activation:    3.67GiB
 ```
 
-该结果证明相同 61,312-token DiT forward 在 V0 下可以完成，但不等同于 50-step
-端到端视频已经成功。
+step-end NVML 为：
+
+```text
+4490, 3832, 3952, 3774, 3696MiB
+```
+
+step-end Torch reserved 为：
+
+```text
+3800, 3142, 3262, 3084, 3006MiB
+```
+
+这组数据没有旧实现的逐 step 显存阶梯增长；`empty_cache()` A/B 对平均延迟的影响约
+0.08%，但将 5-step NVML 峰值从 6516MiB 降到 6374MiB。
 
 结果文件：
 
 ```text
 workspace/benchmarks/results/
-probe8_streaming_full_f515_q4096_kv1024_480x832_f515_s1_20260817T073717Z.json
+soak8_flash2_frozen_emptycache_full_f515_s5_q16384_kv4096_480x832_f515_s5_20260817T123616Z.json
 ```
 
-### 9.3 对比摘要
+### 9.5 单步 phase 与搬运开销
 
-| 项目 | Baseline | Streaming V0 |
+Instrumented 单步的 phase wall time：
+
+| Phase | Seconds | 占 67.307s |
+|---|---:|---:|
+| A | 10.037 | 14.9% |
+| B | 30.229 | 44.9% |
+| C | 4.194 | 6.2% |
+| D1 | 9.604 | 14.3% |
+| D2 | 7.046 | 10.5% |
+| final layer | 0.120 | 0.2% |
+
+Nsight Systems 独立 profiling run 的 CUDA memcpy 汇总：
+
+```text
+profile step wall: 74.209s
+H2D copy-engine:   21.358s, 688.3GB
+D2H copy-engine:   12.849s, 334.6GB
+copy-engine sum:   34.207s, 46.1% of profiled wall
+```
+
+46.1% 是 copy-engine busy time / profiled wall，不是“去掉搬运后的可直接加速比例”。
+KV 双缓冲允许部分 H2D 与 FlashAttention kernel 重叠，而且 H2D/D2H 与计算的重叠关系
+必须结合 timeline 理解。
+
+### 9.6 数值 parity
+
+在 baseline 可以运行的 19K-token、完整 50-block、1-step 点上：
+
+| Output | Relative L2 | Max abs | Cosine |
+|---|---:|---:|---:|
+| Video | 0.017715 | 0.21875 | 0.999730 |
+| Audio | 0.027160 | 0.03125 | 0.999714 |
+
+BF16 fused streaming 不追求 bitwise 一致；cosine 均大于 0.9997，未观测到 NaN/Inf。
+
+### 9.7 当前对比摘要
+
+| 项目 | Full-sequence baseline | Fused Streaming |
 |---|---:|---:|
 | Packed tokens | 61,312 | 61,312 |
 | VRAM budget | 8192MiB | 8192MiB |
-| Weight offload | CPU/DRAM | CPU/DRAM |
+| Weight backing | CPU/DRAM | CPU/DRAM |
 | DiT blocks | 50 | 50 |
 | 首个 forward | OOM | success |
-| NVML peak | 7432MiB 后申请失败 | 7704MiB |
-| CPU RSS peak | 17.6GiB | 40.5GiB |
-| 单步时间 | 未完成 | 450.3s |
+| 5-step soak | 不可执行 | success |
+| NVML peak | 8078MiB 后申请失败 | 6374MiB |
+| CPU RSS peak | 17.6GiB | 42.6GiB |
 
-不能把 Streaming 表述为“观测峰值数值一定比 baseline 更低”。Baseline 在 7432MiB
-时失败，是因为下一次 836MiB allocation 无法满足；其完成该操作所需工作集超过
-8GB。Streaming 的意义是拆分大 allocation 并转移到 CPU，使完整 forward 在
-7704MiB 实际峰值下完成。
+Baseline 的 8078MiB 是失败前观测峰值，不是完成 forward 所需显存。Streaming 的
+收益在于拆分无法满足的大 allocation，并将完整序列 activation 转移到 CPU；代价是
+约 43GB RSS、每步约 918GiB 逻辑双向流量和显著延迟。
 
 ## 10. 为什么 Encoder/Decoder 不一定 OOM
 
@@ -468,6 +578,7 @@ Audio VAE 在 Video VAE 完成并 offload 后单独加载。其序列和通道�
 ```bash
 docker compose exec -T -d \
   -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTORCH_ALLOC_CONF=expandable_segments:True \
   -e PYTHONPATH=/opt/DiffSynth-Studio:/workspace \
   diffsynth bash -lc '
     exec numactl \
@@ -475,14 +586,15 @@ docker compose exec -T -d \
       --membind=3 \
       python /workspace/benchmarks/minimax_h3_baseline.py \
         --height 480 --width 832 --frames 515 --steps 50 --seed 0 \
-        --tag final8_streaming_full_f515_s50_q4096_kv1024 \
+        --tag final8_flash2_frozen_emptycache_full_f515_s50_q16384_kv4096 \
         --target-vram-mib 8192 \
         --offload-device cpu \
         --activation-streaming \
         --projection-chunk-size 2048 \
-        --attention-q-block-size 4096 \
-        --attention-kv-block-size 1024 \
-        > /workspace/benchmarks/results/final8_streaming_full_f515_s50.log 2>&1'
+        --attention-q-block-size 16384 \
+        --attention-kv-block-size 4096 \
+        --streaming-attention-backend flash2_lse \
+        > /workspace/benchmarks/results/final8_flash2_frozen_emptycache_full_f515_s50.log 2>&1'
 ```
 
 命令没有设置：
@@ -521,17 +633,17 @@ process state: running
 该估算不包含最终 VAE decode 和 MP4 mux。实时日志：
 
 ```text
-workspace/benchmarks/results/final8_streaming_full_f515_s50.log
+workspace/benchmarks/results/final8_flash2_frozen_emptycache_full_f515_s50.log
 ```
 
 预期最终文件：
 
 ```text
 workspace/benchmarks/results/
-final8_streaming_full_f515_s50_q4096_kv1024_480x832_f515_s50_<timestamp>.json
+final8_flash2_frozen_emptycache_full_f515_s50_q16384_kv4096_480x832_f515_s50_<timestamp>.json
 
 workspace/benchmarks/results/
-final8_streaming_full_f515_s50_q4096_kv1024_480x832_f515_s50_<timestamp>.mp4
+final8_flash2_frozen_emptycache_full_f515_s50_q16384_kv4096_480x832_f515_s50_<timestamp>.mp4
 ```
 
 ## 12. 端到端成功标准
@@ -595,7 +707,8 @@ MP4 size/duration/frame count/audio stream
 允许：
 
 > 在相同 8GB 进程预算和 61,312-token FL2VA 输入下，full-sequence baseline 在首个
-> DiT step 因 MLP activation OOM；Streaming V0 完成完整 50-block 单步，并在最终
+> DiT forward 的 full Q/K/V 路径 OOM；Fused Streaming 完成完整 50-block 和
+> 5-step soak，并在最终
 > 50-step 任务成功后完成真实 Video/Audio VAE decode 和 MP4 生成。
 
 正式任务完成前禁止：
@@ -605,13 +718,14 @@ MP4 size/duration/frame count/audio stream
 ## 14. 结论边界与风险
 
 1. 当前案例是 FL2VA，不是 Ref2VA。
-2. V0 是 PyTorch reference，不是高性能 fused kernel。
+2. 当前 backend 已使用 BF16 FlashAttention 2 和 Triton LSE merge，但 projection、
+   MLP 与 CPU/GPU pipeline 仍不是端到端单 kernel 实现。
 3. 61k attention 的计算量近似按序列长度平方增长，延迟非常高。
-4. CPU RSS 已达到约 40.5GiB，不能只报告 GPU 显存收益。
+4. CPU RSS 已达到约 42.6GiB，不能只报告 GPU 显存收益。
 5. KV 重扫会产生大量 PCIe H2D 流量。
-6. Streaming 完整单步 NVML 峰值 7704MiB，距离 8192MiB 只有约 488MiB，decoder
-   仍存在 OOM 或 budget-exceeded 风险。
-7. Baseline 的 7432MiB 是失败前观测峰值，不是完成 forward 所需显存；其下一次
+6. 5-step Streaming NVML 峰值 6374MiB，距离 8192MiB 约 1818MiB；最终 decoder
+   仍须以正式任务实测为准。
+7. Baseline 的 8078MiB 是失败前观测峰值，不是完成 forward 所需显存；其下一次
    836MiB allocation 已使所需工作集超过 8GB。
 8. 单次运行没有误差条，只能使用 measured latency、observed peak 和 system
    characterization 等措辞。
@@ -620,11 +734,10 @@ MP4 size/duration/frame count/audio stream
 
 正式 50-step FL2VA 完成后，建议：
 
-1. 验证 MP4 和音频 stream；
-2. 汇总 baseline/streaming 端到端表格；
-3. 执行 Nsight Systems 单 block profile；
-4. 增加 Ref2VA image reference parity；
-5. 增加 Ref2VA video+audio reference 真实生成；
-6. 对 reference encoder、DiT 和 decoder 分阶段记录 NVML peak；
-7. 优化 final layer，避免完整 hidden 回到 GPU；
-8. 将 V0 online-softmax 替换为更高效的 fused streaming kernel。
+1. 增加 Ref2VA image reference parity；
+2. 增加 Ref2VA video+audio reference 真实生成；
+3. 对 reference encoder、DiT 和 decoder 分阶段记录 NVML peak；
+4. 将 projection/MLP 小算子进一步 fuse，减少 Python launch 和中间 tensor；
+5. 复用持久 copy stream/event/buffer，减少每 block 对象创建；
+6. 在保持固定 tile 的前提下研究更深的 copy/compute pipeline；
+7. 增加 4GB/6GB/8GB 与更多序列长度的独立进程扫长。
