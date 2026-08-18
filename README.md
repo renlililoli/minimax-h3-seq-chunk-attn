@@ -128,4 +128,5 @@ benchmarks.
 Detailed reports:
 
 - [8GB / 61K end-to-end experiment](docs/minimax_h3_8gb_61k_end_to_end_experiment.md)
+- [Exclusive-GPU native rerun procedure](docs/exclusive_gpu_benchmark.md)
 - [Standalone H3 integration report](https://github.com/renlililoli/stream-attn/blob/main/docs/minimax_h3_integration.md)
