@@ -22,7 +22,8 @@ trading latency and PCIe traffic for a much lower GPU capacity requirement.
 
 | Experiment | Native / prior path | `seqattn` | Improvement |
 |---|---:|---:|---:|
-| 132,288-token live GPU peak | 30,850 MiB | **7,162 MiB** | **4.31× lower** |
+| 132,288-token 50-step attempt | **OOM after 14 steps** | **14 steps and continuing** | bounded activation memory |
+| 132,288-token GPU peak | 30,876 MiB | **7,164 MiB** | **4.31× lower** |
 | 132,288-token completed capacity probe | — | **5,968 MiB** | succeeds below 8GiB |
 | 61,312-token projected-pipeline peak | 7,108 MiB | **3,848 MiB** | **45.9% lower** |
 | 61,312-token projected-pipeline latency | 919.79 ms | **843.44 ms** | **8.3% faster** |
@@ -44,15 +45,17 @@ video claim.
 
 | Live snapshot · August 18, 2026 UTC | Native DiffSynth | `seqattn` |
 |---|---:|---:|
-| Completed steps | 6 / 50 | 4 / 50 |
-| Latest step | **140.117 s** | 224.324 s |
-| PID-level NVML peak | 30,850 MiB | **7,162 MiB** |
-| Step-end memory | 30,850 MiB | **4,434 MiB** |
+| Completed steps | **14 / 50, then OOM** | **14 / 50, still running** |
+| Mean step through step 14 | **140.068 s** | about 224.31 s |
+| PID-level NVML peak | 30,876 MiB | **7,164 MiB** |
+| Step-end memory | 30,876 MiB | **4,432 MiB** |
 
-Native is currently about 1.60× faster when its full activation set fits.
-`seqattn` uses only 23.2% of its GPU memory, keeping the same 132K-token workload
-inside an 8GiB target.  Final numbers will be published only after all 50
-steps, Video VAE decode, Audio VAE decode, and MP4 mux complete.
+Native is about 1.60× faster per successful step, but the unrestricted process
+OOMs while starting step 15: it requests another 3.53GiB with only 1.20GiB free
+on the 31.36GiB device.  `seqattn` uses only 23.2% of the native peak and stays
+flat through the matching 14-step checkpoint inside an 8GiB target.  Final
+`seqattn` numbers will be published only after all 50 steps, Video VAE decode,
+Audio VAE decode, and MP4 mux complete.
 
 ## Repository layout
 
