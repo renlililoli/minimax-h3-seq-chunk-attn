@@ -9,6 +9,7 @@ services:
     working_dir: /workspace
     volumes:
       - ./extern/DiffSynth-Studio:/opt/DiffSynth-Studio
+      - ./extern/seqattn:/opt/seqattn
       - /scratch/grzhu/weights/video:/models
       - ./workspace:/workspace
     deploy:

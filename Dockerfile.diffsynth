@@ -3,7 +3,9 @@ FROM comfyui:cu128
 WORKDIR /opt/DiffSynth-Studio
 
 COPY extern/DiffSynth-Studio/ /opt/DiffSynth-Studio/
+COPY extern/seqattn/ /opt/seqattn/
 
+RUN python -m pip install --no-cache-dir -e /opt/seqattn
 RUN python -m pip install --no-cache-dir -e .
 RUN python -m pip install --no-cache-dir bitsandbytes
 
