@@ -192,7 +192,7 @@ streaming fallback: pure PyTorch FP32 online softmax
 
 Main repository branch: feature/minimax-h3-sequence-streaming
 DiffSynth submodule commit: 653709f
-seqattn submodule commit: 6d58f86
+seqattn submodule commit: 62bed7f
 ```
 
 ## 5. 8GB 显存预算定义
@@ -657,6 +657,53 @@ Audio VAE 在 Video VAE 完成并 offload 后单独加载。其序列和通道�
 61k-token DiT MLP，一般不会成为主 GPU 峰值，但最终仍以实际运行 JSON 为准。
 
 ## 11. 正式 50-step Streaming 任务
+
+### 11.0 6GB、15K-token 完整成功点
+
+为区分“DiT 长序列能力”和“超长 Video VAE 输出拼接”两个问题，在 GPU 1 上额外执行
+了更短序列、更严格预算的完整生成：
+
+```text
+480×832
+124 frames
+15,104 packed tokens
+50 DiT blocks
+50 denoise steps
+target_vram_mib = 6144
+seqattn workspace = 1024MiB
+CPU/DRAM NF4 weight backing
+Video VAE + Audio VAE + MP4 enabled
+```
+
+结果：
+
+| 指标 | 数值 |
+|---|---:|
+| 状态 | **success** |
+| PID NVML 峰值 | **4748MiB** |
+| Torch allocated / reserved peak | 3771.6 / 4058MiB |
+| CPU RSS peak | 38697MiB |
+| 50-step denoise | 764.313s |
+| mean / median step | 15.286 / 14.637s |
+| Video VAE decode | 11.836s |
+| Audio VAE decode | 0.286s |
+| pipeline total | 798.938s |
+| MP4 mux | 1.945s |
+
+输出经过 PyAV 重新打开验证：H.264、832×480、124 帧、5.1667 秒；AAC 双声道、
+32kHz、5.175 秒。最终 MP4 大小 9,009,041 bytes。
+
+该结果证明在 6GB 整进程预算下，15K-token H3 可以完成真正的 50-step 端到端生成。
+132K/8GB 任务与它的区别不是 DiT 未完成：132K DiT 也完成了 50/50 steps；失败发生
+在超长 Video VAE 的 GPU tile-row `torch.cat`。因此后续应对 decoder tile row 做 CPU
+backed assembly，而不是继续修改 attention 数学路径。
+
+结果文件：
+
+```text
+workspace/benchmarks/results/
+short6g_seqattn_480x832_f124_s50_gpu1_480x832_f124_s50_20260818T070725Z.json
+```
 
 ### 11.1 运行命令
 
