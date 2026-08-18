@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import csv
+import gzip
 import importlib.metadata
 import os
 import platform
@@ -43,17 +45,23 @@ def atomic_write_json(path: str | Path, payload: dict) -> None:
             os.unlink(temporary)
 
 
-_nvml_handle = None
+_nvml_handles = {}
 
 
 def _pid_gpu_memory_mib(pid: int) -> float:
-    global _nvml_handle
+    physical_gpu_index = int(os.environ.get("BENCH_NVML_GPU_INDEX", "0"))
     if pynvml is not None:
         try:
-            if _nvml_handle is None:
+            if physical_gpu_index not in _nvml_handles:
                 pynvml.nvmlInit()
-                _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            processes = list(pynvml.nvmlDeviceGetComputeRunningProcesses(_nvml_handle))
+                _nvml_handles[physical_gpu_index] = pynvml.nvmlDeviceGetHandleByIndex(
+                    physical_gpu_index
+                )
+            processes = list(
+                pynvml.nvmlDeviceGetComputeRunningProcesses(
+                    _nvml_handles[physical_gpu_index]
+                )
+            )
             return sum(
                 float(process.usedGpuMemory) / 2**20
                 for process in processes
@@ -89,19 +97,94 @@ def _rss_mib(pid: int) -> float:
 
 
 class ProcessSampler:
-    def __init__(self, pid: int | None = None, interval_seconds: float = 0.05):
+    def __init__(
+        self,
+        pid: int | None = None,
+        interval_seconds: float = 0.02,
+        record_trace: bool = False,
+    ):
+        if interval_seconds <= 0:
+            raise ValueError("sampling interval must be positive")
         self.pid = os.getpid() if pid is None else pid
         self.interval_seconds = interval_seconds
         self.nvml_peak_mib = 0.0
         self.rss_peak_mib = 0.0
+        self.sample_count = 0
+        self._window_active = False
+        self._window_index = 0
+        self._window_nvml_peak_mib = 0.0
+        self._window_rss_peak_mib = 0.0
+        self._window_sample_count = 0
         self._stop = threading.Event()
+        self._sample_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        self._trace_started_ns = time.perf_counter_ns()
+        self._record_trace = record_trace
+        self._trace = []
 
     def _run(self):
         while not self._stop.is_set():
-            self.nvml_peak_mib = max(self.nvml_peak_mib, _pid_gpu_memory_mib(self.pid))
-            self.rss_peak_mib = max(self.rss_peak_mib, _rss_mib(self.pid))
+            self.sample()
             self._stop.wait(self.interval_seconds)
+
+    def sample(self) -> tuple[float, float]:
+        with self._sample_lock:
+            nvml_mib = _pid_gpu_memory_mib(self.pid)
+            rss_mib = _rss_mib(self.pid)
+            self.sample_count += 1
+            self.nvml_peak_mib = max(self.nvml_peak_mib, nvml_mib)
+            self.rss_peak_mib = max(self.rss_peak_mib, rss_mib)
+            if self._window_active:
+                self._window_nvml_peak_mib = max(
+                    self._window_nvml_peak_mib, nvml_mib
+                )
+                self._window_rss_peak_mib = max(
+                    self._window_rss_peak_mib, rss_mib
+                )
+                self._window_sample_count += 1
+            if self._record_trace:
+                self._trace.append((
+                    (time.perf_counter_ns() - self._trace_started_ns) / 1_000_000.0,
+                    self._window_index if self._window_active else 0,
+                    nvml_mib,
+                    rss_mib,
+                ))
+            return nvml_mib, rss_mib
+
+    def begin_window(self) -> None:
+        """Start a sampling window used to attribute peaks to one denoise step."""
+        with self._sample_lock:
+            if self._window_active:
+                raise RuntimeError("a process-sampling window is already active")
+            self._window_active = True
+            self._window_index += 1
+            self._window_nvml_peak_mib = 0.0
+            self._window_rss_peak_mib = 0.0
+            self._window_sample_count = 0
+
+    def end_window(self) -> dict[str, float | int]:
+        """Finish the current window after taking a synchronized final sample."""
+        self.sample()
+        with self._sample_lock:
+            if not self._window_active:
+                raise RuntimeError("no process-sampling window is active")
+            result = {
+                "nvml_process_peak_mib": self._window_nvml_peak_mib,
+                "cpu_rss_peak_mib": self._window_rss_peak_mib,
+                "sample_count": self._window_sample_count,
+            }
+            self._window_active = False
+            return result
+
+    def write_trace_csv_gz(self, path: str | Path) -> int:
+        """Write raw samples without inflating the main benchmark JSON."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(("elapsed_ms", "denoise_step", "nvml_process_mib", "cpu_rss_mib"))
+            writer.writerows(self._trace)
+        return len(self._trace)
 
     def __enter__(self):
         self._thread.start()
@@ -110,8 +193,7 @@ class ProcessSampler:
     def __exit__(self, *_):
         self._stop.set()
         self._thread.join(timeout=max(1.0, self.interval_seconds * 2))
-        self.nvml_peak_mib = max(self.nvml_peak_mib, _pid_gpu_memory_mib(self.pid))
-        self.rss_peak_mib = max(self.rss_peak_mib, _rss_mib(self.pid))
+        self.sample()
 
 
 @dataclass(frozen=True)

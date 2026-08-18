@@ -2,6 +2,7 @@
 """Reproducible baseline runner for the unmodified DiffSynth MiniMax-H3 path."""
 
 import argparse
+from collections import Counter
 import json
 import os
 import platform
@@ -36,10 +37,45 @@ def synchronize():
         torch.cuda.synchronize()
 
 
+def cuda_module_storage_summary(module):
+    """Return CUDA storage held directly by a module at a step boundary."""
+    seen = set()
+    storage_bytes = 0
+    tensor_count = 0
+    for tensor in (*module.parameters(), *module.buffers()):
+        if tensor is None or tensor.device.type != "cuda":
+            continue
+        storage = tensor.untyped_storage()
+        key = (tensor.device.index, storage.data_ptr(), storage.nbytes())
+        if key in seen:
+            continue
+        seen.add(key)
+        storage_bytes += storage.nbytes()
+        tensor_count += 1
+
+    wrapper_states = Counter()
+    preparing_enabled = Counter()
+    for child in module.modules():
+        attributes = vars(child)
+        if "state" not in attributes or "preparing_enabled" not in attributes:
+            continue
+        wrapper_states[str(attributes["state"])] += 1
+        preparing_enabled[str(bool(attributes["preparing_enabled"]))] += 1
+    return {
+        "dit_cuda_storage_mib": storage_bytes / 2**20,
+        "dit_cuda_tensor_count": tensor_count,
+        "dit_wrapper_state_counts": dict(wrapper_states),
+        "dit_wrapper_preparing_enabled_counts": dict(preparing_enabled),
+    }
+
+
 class StepTimer:
-    def __init__(self, iterable):
+    def __init__(self, iterable, sampler, memory_probe=None):
         self.iterable = iterable
+        self.sampler = sampler
+        self.memory_probe = memory_probe
         self.step_seconds = []
+        self.step_memory = []
         self.peak_allocated_mib = None
         self.peak_reserved_mib = None
 
@@ -48,12 +84,40 @@ class StepTimer:
         torch.cuda.reset_peak_memory_stats()
         for item in self.iterable:
             synchronize()
+            self.sampler.begin_window()
             started = time.perf_counter()
             yield item
             synchronize()
             elapsed = time.perf_counter() - started
+            step_peaks = self.sampler.end_window()
             self.step_seconds.append(elapsed)
+            nvml_mib, rss_mib = self.sampler.sample()
+            memory = {
+                "step": len(self.step_seconds),
+                "torch_allocated_mib": torch.cuda.memory_allocated() / 2**20,
+                "torch_reserved_mib": torch.cuda.memory_reserved() / 2**20,
+                "nvml_process_mib": nvml_mib,
+                "cpu_rss_mib": rss_mib,
+                "nvml_process_peak_mib": step_peaks["nvml_process_peak_mib"],
+                "cpu_rss_peak_mib": step_peaks["cpu_rss_peak_mib"],
+                "nvml_sample_count": step_peaks["sample_count"],
+            }
+            if self.memory_probe is not None:
+                memory.update(self.memory_probe())
+            self.step_memory.append(memory)
             print(f"BENCH_STEP {len(self.step_seconds)} {elapsed:.6f}s", flush=True)
+            print(
+                "BENCH_STEP_MEMORY "
+                f"{memory['step']} "
+                f"allocated={memory['torch_allocated_mib']:.1f}MiB "
+                f"reserved={memory['torch_reserved_mib']:.1f}MiB "
+                f"nvml_end={memory['nvml_process_mib']:.1f}MiB "
+                f"nvml_peak={memory['nvml_process_peak_mib']:.1f}MiB "
+                f"samples={memory['nvml_sample_count']} "
+                f"rss={memory['cpu_rss_mib']:.1f}MiB "
+                f"dit_cuda={memory.get('dit_cuda_storage_mib', 0.0):.1f}MiB",
+                flush=True,
+            )
         synchronize()
         self.peak_allocated_mib = torch.cuda.max_memory_allocated() / 2**20
         self.peak_reserved_mib = torch.cuda.max_memory_reserved() / 2**20
@@ -169,14 +233,44 @@ def main():
     parser.add_argument("--attention-q-block-size", type=int, default=2048)
     parser.add_argument("--attention-kv-block-size", type=int, default=512)
     parser.add_argument(
+        "--streaming-attention-backend",
+        choices=("auto", "torch", "flash2_lse", "seqattn"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--seqattn-workspace-mib",
+        type=int,
+        default=1024,
+        help="CUDA workspace owned by seqattn; excludes model weights and caller allocations.",
+    )
+    parser.add_argument(
+        "--seqattn-q-chunk-tokens",
+        type=int,
+        default=None,
+        help="Optional explicit resident query chunk; default lets seqattn plan from workspace.",
+    )
+    parser.add_argument(
         "--instrument-streaming",
         action="store_true",
         help="Collect synchronized A/B/C/D1/D2 timing and logical transfer counters.",
+    )
+    parser.add_argument(
+        "--sample-interval-ms",
+        type=float,
+        default=20.0,
+        help="NVML/RSS sampling interval used for global and per-step peaks.",
+    )
+    parser.add_argument(
+        "--save-memory-trace",
+        action="store_true",
+        help="Save every NVML/RSS sample with its denoise-step index as CSV.gz.",
     )
     args = parser.parse_args()
 
     if args.target_vram_mib is not None and args.simulated_vram_gib is not None:
         raise ValueError("target-vram-mib and simulated-vram-gib are mutually exclusive")
+    if args.sample_interval_ms <= 0:
+        raise ValueError("sample-interval-ms must be positive")
 
     physical_vram_bytes = torch.cuda.get_device_properties(0).total_memory
     physical_vram_gib = physical_vram_bytes / 2**30
@@ -230,6 +324,16 @@ def main():
             "torch": torch.__version__,
             "cuda_runtime": torch.version.cuda,
             "cudnn": torch.backends.cudnn.version(),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "benchmark_nvml_gpu_index": int(
+                os.environ.get("BENCH_NVML_GPU_INDEX", "0")
+            ),
+            "physical_gpu_index": int(
+                os.environ.get(
+                    "BENCH_PHYSICAL_GPU_INDEX",
+                    os.environ.get("BENCH_NVML_GPU_INDEX", "0"),
+                )
+            ),
             "gpu": gpu_info(),
         },
     }
@@ -238,7 +342,10 @@ def main():
     video_decode_samples = []
     audio_decode_samples = []
     captured_latents = {}
-    sampler = ProcessSampler()
+    sampler = ProcessSampler(
+        interval_seconds=args.sample_interval_ms / 1000.0,
+        record_trace=args.save_memory_trace,
+    )
     sampler.__enter__()
     try:
         model_dir = Path(args.model_dir)
@@ -320,7 +427,11 @@ def main():
         inference_started = time.perf_counter()
         def progress_factory(iterable):
             nonlocal progress
-            progress = StepTimer(iterable)
+            progress = StepTimer(
+                iterable,
+                sampler,
+                memory_probe=lambda: cuda_module_storage_summary(pipe.dit),
+            )
             return progress
 
         streaming_stats = StreamingStats(
@@ -338,6 +449,9 @@ def main():
             projection_chunk_size=args.projection_chunk_size,
             attention_q_block_size=args.attention_q_block_size,
             attention_kv_block_size=args.attention_kv_block_size,
+            streaming_attention_backend=args.streaming_attention_backend,
+            seqattn_workspace_mib=args.seqattn_workspace_mib,
+            seqattn_q_chunk_tokens=args.seqattn_q_chunk_tokens,
             streaming_stats=streaming_stats,
         )
         synchronize()
@@ -346,6 +460,7 @@ def main():
         if progress is not None:
             result["denoise_peak_allocated_mib"] = progress.peak_allocated_mib
             result["denoise_peak_reserved_mib"] = progress.peak_reserved_mib
+            result["denoise_step_memory"] = progress.step_memory
         result["video_decode_calls_seconds"] = video_decode_samples
         result["audio_decode_calls_seconds"] = audio_decode_samples
         result["inference_peak_allocated_mib"] = torch.cuda.max_memory_allocated() / 2**20
@@ -388,6 +503,7 @@ def main():
             result["denoise"] = stats(progress.step_seconds)
             result["denoise_peak_allocated_mib"] = progress.peak_allocated_mib
             result["denoise_peak_reserved_mib"] = progress.peak_reserved_mib
+            result["denoise_step_memory"] = progress.step_memory
         if video_decode_samples:
             result["video_decode_calls_seconds"] = video_decode_samples
         if audio_decode_samples:
@@ -398,6 +514,16 @@ def main():
         result["max_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         result["nvml_process_peak_mib"] = sampler.nvml_peak_mib
         result["cpu_rss_peak_mib"] = sampler.rss_peak_mib
+        result["memory_sampling"] = {
+            "interval_ms": args.sample_interval_ms,
+            "sample_count": sampler.sample_count,
+        }
+        if args.save_memory_trace:
+            trace_path = output_dir / f"{run_name}_memory_trace.csv.gz"
+            result["memory_sampling"]["trace_sample_count"] = (
+                sampler.write_trace_csv_gz(trace_path)
+            )
+            result["memory_sampling"]["trace_path"] = str(trace_path)
         if budget is not None:
             result["memory_policy"].update({
                 "target_vram_mib": budget.target_mib,
