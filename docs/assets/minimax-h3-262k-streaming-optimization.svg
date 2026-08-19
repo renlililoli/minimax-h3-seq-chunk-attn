@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">MiniMax-H3 262K streaming optimization</title>
+  <desc id="desc">The current automatic Blackwell kernel and fused MLP reduce a full 50-block denoise step from 806.5 seconds to 571.0 seconds and CPU RSS from 66.0 to 57.8 GiB.</desc>
+  <rect width="1200" height="560" fill="#f8fafc"/>
+  <rect x="36" y="32" width="1128" height="496" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="72" y="82" fill="#0f172a" font-family="Inter,Arial,sans-serif" font-size="30" font-weight="700">MiniMax-H3 262,720-token full DiT</text>
+  <text x="72" y="116" fill="#475569" font-family="Inter,Arial,sans-serif" font-size="18">RTX 5090 · 50 blocks · 2 GiB SeqAttn workspace · 8 GiB process target</text>
+
+  <text x="72" y="176" fill="#0f172a" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="700">Denoise step</text>
+  <text x="72" y="205" fill="#64748b" font-family="Inter,Arial,sans-serif" font-size="15">Lower is better</text>
+  <rect x="250" y="157" width="620" height="40" rx="4" fill="#f59e0b"/>
+  <text x="886" y="184" fill="#92400e" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">806.5 s</text>
+  <rect x="250" y="211" width="439" height="40" rx="4" fill="#0f766e"/>
+  <text x="705" y="238" fill="#115e59" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">571.0 s</text>
+  <text x="250" y="276" fill="#0f766e" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700">29.2% faster · 1.412x speedup</text>
+
+  <text x="72" y="343" fill="#0f172a" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="700">CPU RSS peak</text>
+  <text x="72" y="372" fill="#64748b" font-family="Inter,Arial,sans-serif" font-size="15">Lower is better</text>
+  <rect x="250" y="324" width="508" height="40" rx="4" fill="#f59e0b"/>
+  <text x="774" y="351" fill="#92400e" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">66.0 GiB</text>
+  <rect x="250" y="378" width="444" height="40" rx="4" fill="#0f766e"/>
+  <text x="710" y="405" fill="#115e59" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700">57.8 GiB</text>
+  <text x="250" y="443" fill="#0f766e" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700">8.1 GiB lower · 833 GiB less logical PCIe traffic</text>
+
+  <rect x="905" y="150" width="215" height="285" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="930" y="190" fill="#334155" font-family="Inter,Arial,sans-serif" font-size="16" font-weight="700">Activation scale</text>
+  <text x="930" y="230" fill="#64748b" font-family="Inter,Arial,sans-serif" font-size="14">Q/K/V</text>
+  <text x="930" y="258" fill="#0f172a" font-family="Inter,Arial,sans-serif" font-size="25" font-weight="700">10.523 GiB</text>
+  <text x="930" y="306" fill="#64748b" font-family="Inter,Arial,sans-serif" font-size="14">Q/K/V/output</text>
+  <text x="930" y="334" fill="#0f172a" font-family="Inter,Arial,sans-serif" font-size="25" font-weight="700">14.031 GiB</text>
+  <text x="930" y="382" fill="#64748b" font-family="Inter,Arial,sans-serif" font-size="14">Current GPU peak</text>
+  <text x="930" y="410" fill="#0f172a" font-family="Inter,Arial,sans-serif" font-size="25" font-weight="700">7,866 MiB</text>
+
+  <circle cx="250" cy="489" r="7" fill="#f59e0b"/>
+  <text x="267" y="495" fill="#475569" font-family="Inter,Arial,sans-serif" font-size="15">Previous: 64x64/4/2 + split MLP</text>
+  <circle cx="590" cy="489" r="7" fill="#0f766e"/>
+  <text x="607" y="495" fill="#475569" font-family="Inter,Arial,sans-serif" font-size="15">Current: auto Blackwell + fused MLP</text>
+</svg>

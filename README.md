@@ -1,11 +1,11 @@
 # MiniMax-H3 sequence streaming
 
-> Exact 132K-token MiniMax-H3 inference with a bounded GPU working set.
+> Exact 262K-token MiniMax-H3 inference with a bounded GPU working set.
 
 [![seqattn](https://img.shields.io/badge/operator-seqattn-22d3ee?style=for-the-badge)](https://github.com/renlililoli/stream-attn)
 [![GPU](https://img.shields.io/badge/GPU-RTX%205090-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](#current-results)
 [![Precision](https://img.shields.io/badge/weights-NF4-8b5cf6?style=for-the-badge)](#current-results)
-[![Status](https://img.shields.io/badge/15K%20full%20generation-passed-22c55e?style=for-the-badge)](#completed-15k-comparison)
+[![Status](https://img.shields.io/badge/262K%20full%20DiT-passed-22c55e?style=for-the-badge)](#current-results)
 
 This repository integrates the standalone
 [`seqattn`](https://github.com/renlililoli/stream-attn) operator with
@@ -15,21 +15,28 @@ tiles.  The implementation preserves exact dense attention semantics while
 trading latency and PCIe traffic for a much lower GPU capacity requirement.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/renlililoli/stream-attn/main/docs/assets/minimax-h3-live-overview.svg" alt="MiniMax-H3 132K-token live benchmark" width="100%">
+  <img src="docs/assets/minimax-h3-262k-streaming-optimization.svg" alt="MiniMax-H3 262K streaming optimization comparison" width="100%">
 </p>
 
 ## Current results
 
-| Experiment | Native / prior path | `seqattn` | Improvement |
+| Experiment | Baseline / prior path | `seqattn` | Improvement |
 |---|---:|---:|---:|
+| 262,720-token optimized full DiT | 806.465 s | **570.980 s** | **29.20% faster / 1.412x** |
+| 262,720-token CPU RSS peak | 66,048 MiB | **57,769 MiB** | **8,279 MiB lower** |
+| 262,720-token logical PCIe traffic | 6,052.6 GiB | **5,219.5 GiB** | **833.1 GiB less/step** |
 | 15,104-token full generation | 20,970 MiB | **4,748 MiB under 6GiB** | **77.36% / 4.42× lower** |
 | 15,104-token 50-step DiT | **227.83 s** | 764.31 s | 3.35× capacity tradeoff |
 | 132,288-token 50-step attempt | **OOM after 14 steps** | **50/50 DiT steps completed** | native cannot finish denoise |
 | 132,288-token GPU peak | 30,876 MiB | **about 7,166 MiB** | **about 4.31× lower** |
-| 132,288-token completed capacity probe | — | **5,968 MiB** | succeeds below 8GiB |
-| 61,312-token projected-pipeline peak | 7,108 MiB | **3,848 MiB** | **45.9% lower** |
-| 61,312-token projected-pipeline latency | 919.79 ms | **843.44 ms** | **8.3% faster** |
-| 61,056-token full H3 PCIe traffic | 917.6 GiB | **836.1 GiB** | **81.5 GiB less/step** |
+
+The new largest completed point extends the README 720p workload to 957
+frames, which produces 262,720 packed tokens. One BF16 Q, K, or V tensor is
+3.508GiB; complete Q/K/V is 10.523GiB and Q/K/V/output is 14.031GiB. The
+current automatic Blackwell kernel plus fused MLP completes all 50 DiT blocks
+in 570.980 seconds under the same 8,192MiB process target. The prior
+`64x64/4/2` kernel plus split MLP takes 806.465 seconds. Both are CPU-DRAM-backed
+streaming runs; this comparison does not use the paged or NVMe runtime.
 
 The completed 132K capacity probe executes all 50 DiT blocks for one denoise
 step under an 8,192MiB whole-process target.  It takes 236.39 seconds and peaks
@@ -139,7 +146,8 @@ benchmarks.
 
 ## Measurement boundary
 
-- Memory source of record: current-PID NVML samples every 2ms for 132K runs.
+- Memory source of record: current-PID NVML samples every 100ms for the 262K
+  optimization comparison and every 2ms for the earlier 132K runs.
 - Weights: MiniMax-H3 FL2VA NF4; compute: BF16.
 - Offload backing: CPU DRAM, never disk.
 - Logical H2D/D2H values are instrumented traffic, not link-level counters.
@@ -149,6 +157,7 @@ benchmarks.
 
 Detailed reports:
 
+- [262K old-vs-current streaming optimization comparison](docs/minimax_h3_rtx5090_262k_streaming_optimization_2026-08-19.md)
 - [15K native vs. strict-6GiB `seqattn`, with generated videos](docs/minimax_h3_native_vs_seqattn_15k.md)
 - [8GB / 61K end-to-end experiment](docs/minimax_h3_8gb_61k_end_to_end_experiment.md)
 - [Exclusive-GPU native rerun procedure](docs/exclusive_gpu_benchmark.md)
