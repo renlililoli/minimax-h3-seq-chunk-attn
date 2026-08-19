@@ -2,29 +2,27 @@
 """Reproducible baseline runner for the unmodified DiffSynth MiniMax-H3 path."""
 
 import argparse
-from collections import Counter
-import json
 import os
 import platform
 import resource
 import subprocess
 import time
 import traceback
+from collections import Counter
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
-
-from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline, ModelConfig
-from diffsynth.core.attention.streaming import StreamingStats
-from diffsynth.utils.data.audio_video import write_video_audio
 from benchmarks.minimax_h3_bench.protocol import (
     ProcessSampler,
     atomic_write_json,
     classify_exception,
     initialize_vram_budget,
 )
-
+from diffsynth.core.attention.streaming import StreamingStats
+from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline, ModelConfig
+from diffsynth.utils.data.audio_video import write_video_audio
 
 PROMPT = (
     "A girl is very happy, she is speaking in english: “I enjoy working with "
@@ -70,10 +68,19 @@ def cuda_module_storage_summary(module):
 
 
 class StepTimer:
-    def __init__(self, iterable, sampler, memory_probe=None):
+    def __init__(
+        self,
+        iterable,
+        sampler,
+        memory_probe=None,
+        profile_nvtx=False,
+        profile_capture_step=None,
+    ):
         self.iterable = iterable
         self.sampler = sampler
         self.memory_probe = memory_probe
+        self.profile_nvtx = profile_nvtx
+        self.profile_capture_step = profile_capture_step
         self.step_seconds = []
         self.step_memory = []
         self.peak_allocated_mib = None
@@ -86,8 +93,22 @@ class StepTimer:
             synchronize()
             self.sampler.begin_window()
             started = time.perf_counter()
-            yield item
-            synchronize()
+            step_index = len(self.step_seconds) + 1
+            step_range = (
+                torch.cuda.nvtx.range(f"h3:denoise_step_{step_index:02d}")
+                if self.profile_nvtx
+                else nullcontext()
+            )
+            capture_step = self.profile_capture_step == step_index
+            if capture_step:
+                torch.cuda.profiler.start()
+            try:
+                with step_range:
+                    yield item
+                synchronize()
+            finally:
+                if capture_step:
+                    torch.cuda.profiler.stop()
             elapsed = time.perf_counter() - started
             step_peaks = self.sampler.end_window()
             self.step_seconds.append(elapsed)
@@ -272,9 +293,30 @@ def main():
         help="Optional explicit resident query chunk; default lets seqattn plan from workspace.",
     )
     parser.add_argument(
+        "--streaming-mlp-mode",
+        choices=("fused", "split"),
+        default="fused",
+        help="Keep FC1 intermediates on GPU or use the legacy CPU round trip.",
+    )
+    parser.add_argument("--seqattn-block-m", type=int, choices=(16, 32, 64, 128))
+    parser.add_argument("--seqattn-block-n", type=int, choices=(16, 32, 64, 128))
+    parser.add_argument("--seqattn-num-warps", type=int, choices=(2, 4, 8))
+    parser.add_argument("--seqattn-num-stages", type=int, choices=(1, 2, 3, 4))
+    parser.add_argument(
         "--instrument-streaming",
         action="store_true",
-        help="Collect synchronized A/B/C/D1/D2 timing and logical transfer counters.",
+        help="Collect synchronized streaming phase timing and logical transfer counters.",
+    )
+    parser.add_argument(
+        "--profile-nvtx",
+        action="store_true",
+        help="Emit denoise-step, DiT-block, and seqattn NVTX ranges for profilers.",
+    )
+    parser.add_argument(
+        "--profile-capture-step",
+        type=int,
+        default=None,
+        help="Call CUDA profiler start/stop around this 1-based denoise step.",
     )
     parser.add_argument(
         "--sample-interval-ms",
@@ -293,6 +335,8 @@ def main():
         raise ValueError("target-vram-mib and simulated-vram-gib are mutually exclusive")
     if args.sample_interval_ms <= 0:
         raise ValueError("sample-interval-ms must be positive")
+    if args.profile_capture_step is not None and args.profile_capture_step <= 0:
+        raise ValueError("profile-capture-step must be positive")
 
     physical_vram_bytes = torch.cuda.get_device_properties(0).total_memory
     physical_vram_gib = physical_vram_bytes / 2**30
@@ -482,6 +526,8 @@ def main():
                 iterable,
                 sampler,
                 memory_probe=lambda: cuda_module_storage_summary(pipe.dit),
+                profile_nvtx=args.profile_nvtx,
+                profile_capture_step=args.profile_capture_step,
             )
             return progress
 
@@ -503,7 +549,13 @@ def main():
             streaming_attention_backend=args.streaming_attention_backend,
             seqattn_workspace_mib=args.seqattn_workspace_mib,
             seqattn_q_chunk_tokens=args.seqattn_q_chunk_tokens,
+            seqattn_block_m=args.seqattn_block_m,
+            seqattn_block_n=args.seqattn_block_n,
+            seqattn_num_warps=args.seqattn_num_warps,
+            seqattn_num_stages=args.seqattn_num_stages,
+            streaming_mlp_mode=args.streaming_mlp_mode,
             streaming_stats=streaming_stats,
+            profile_nvtx=args.profile_nvtx,
         )
         synchronize()
         result["pipeline_seconds"] = time.perf_counter() - inference_started
