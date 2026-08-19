@@ -1,24 +1,61 @@
 # MiniMax-H3 sequence streaming
 
-> Exact 262K-token MiniMax-H3 inference with a bounded GPU working set.
+> Run a 10.125-second, 768p MiniMax-H3 Ref2VA workflow under an 8 GiB
+> whole-process GPU target.
 
 [![seqattn](https://img.shields.io/badge/operator-seqattn-22d3ee?style=for-the-badge)](https://github.com/renlililoli/stream-attn)
-[![GPU](https://img.shields.io/badge/GPU-RTX%205090-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](#current-results)
-[![Precision](https://img.shields.io/badge/weights-NF4-8b5cf6?style=for-the-badge)](#current-results)
-[![Status](https://img.shields.io/badge/262K%20full%20DiT-passed-22c55e?style=for-the-badge)](#current-results)
+[![GPU](https://img.shields.io/badge/GPU-RTX%205090-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](#ref2va-768p-capacity-result)
+[![Precision](https://img.shields.io/badge/weights-NF4-8b5cf6?style=for-the-badge)](#ref2va-768p-capacity-result)
+[![Task](https://img.shields.io/badge/Ref2VA-1344%C3%97768-0f766e?style=for-the-badge)](#ref2va-768p-capacity-result)
+[![Status](https://img.shields.io/badge/158K%20tokens-8GiB%20passed-22c55e?style=for-the-badge)](#ref2va-768p-capacity-result)
 
 This repository integrates the standalone
 [`seqattn`](https://github.com/renlililoli/stream-attn) operator with
-MiniMax-H3 in DiffSynth-Studio.  Complete Q/K/V activations live in CPU DRAM;
-GPU HBM holds a statically planned resident query working set and streamed K/V
-tiles.  The implementation preserves exact dense attention semantics while
-trading latency and PCIe traffic for a much lower GPU capacity requirement.
+MiniMax-H3 in DiffSynth-Studio. Complete Q/K/V and model hidden activations can
+live in CPU DRAM while GPU HBM holds a planned working set for embedding, QKV
+projection, attention, MLP, and the final layer. The result is activation
+capacity control across the complete DiT, not only an isolated attention call.
+
+## Ref2VA 768p capacity result
+
+<p align="center">
+  <img src="docs/assets/minimax-h3-ref2va-768p-comparison.svg" alt="MiniMax-H3 768p Ref2VA memory and timing comparison" width="100%">
+</p>
+
+A real `video_audio` reference drives a same-duration output at 1344x768,
+24 fps, and 243 frames. The processor and VAE encoders produce 158,208 packed
+tokens. All points use the same Ref2VA NF4 checkpoint, source media, prompt,
+seed, scheduler, CPU weight backing, and physical RTX 5090 GPU3.
+
+| Two-step full workflow | Streaming · 8 GiB target | Native · 8 GiB target | Native · unrestricted 32 GiB |
+|---|---:|---:|---:|
+| Status | **Success** | **OOM before step 1** | **Success** |
+| PID NVML peak | **8,138 MiB** | 8,144 MiB before failure | 32,092 MiB |
+| CPU RSS peak | 68,512 MiB | 23,101 MiB | 42,463 MiB |
+| Two-step DiT | 603.730 s | Not completed | 432.982 s |
+| Steady second step | 226.618 s | Not reached | 199.604 s |
+| Pipeline call | 879.935 s | Failed | 523.988 s |
+| Output | 243 frames + audio + MP4 | None | 243 frames + audio + MP4 |
+
+Streaming uses **74.64% less process GPU memory**, reducing the successful peak
+by **3.94x**. Its second denoise step is 1.135x slower than native; the complete
+pipeline is 1.679x slower because the strict memory target also affects
+reference VAE encoding and final video decode. The cost is explicit: CPU RSS
+increases by 25.44 GiB and two steps move 2,379 GiB logical H2D plus 954 GiB
+logical D2H traffic.
+
+This is a capacity and performance experiment using two denoise steps, not a
+visual-quality comparison. The 8 GiB point is an NVML-aware logical budget on a
+32 GiB RTX 5090, with only 54 MiB observed headroom. Full protocol, token
+composition, phase timing, memory timelines, numerical comparison, and
+reproduction commands are in the
+[768p Ref2VA report](docs/minimax_h3_ref2va_768p_activation_capacity_2026-08-19.md).
+
+## Standalone and long-sequence results
 
 <p align="center">
   <img src="docs/assets/minimax-h3-262k-streaming-optimization.svg" alt="MiniMax-H3 262K streaming optimization comparison" width="100%">
 </p>
-
-## Current results
 
 | Experiment | Baseline / prior path | `seqattn` | Improvement |
 |---|---:|---:|---:|
@@ -157,6 +194,7 @@ benchmarks.
 
 Detailed reports:
 
+- [768p, 243-frame Ref2VA: native 8 GiB OOM vs. streaming 8 GiB success](docs/minimax_h3_ref2va_768p_activation_capacity_2026-08-19.md)
 - [262K old-vs-current streaming optimization comparison](docs/minimax_h3_rtx5090_262k_streaming_optimization_2026-08-19.md)
 - [15K native vs. strict-6GiB `seqattn`, with generated videos](docs/minimax_h3_native_vs_seqattn_15k.md)
 - [8GB / 61K end-to-end experiment](docs/minimax_h3_8gb_61k_end_to_end_experiment.md)

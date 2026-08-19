@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import csv
 import gzip
 import importlib.metadata
+import json
 import os
 import platform
 import resource
@@ -121,6 +121,19 @@ class ProcessSampler:
         self._trace_started_ns = time.perf_counter_ns()
         self._record_trace = record_trace
         self._trace = []
+
+    def elapsed_ms(self) -> float:
+        return (time.perf_counter_ns() - self._trace_started_ns) / 1_000_000.0
+
+    def trace_stats(self, start_ms: float, end_ms: float) -> dict[str, float | int]:
+        """Return sampled memory peaks for a measured wall-clock interval."""
+        with self._sample_lock:
+            rows = [row for row in self._trace if start_ms <= row[0] <= end_ms]
+        return {
+            "sample_count": len(rows),
+            "nvml_process_peak_mib": max((row[2] for row in rows), default=0.0),
+            "cpu_rss_peak_mib": max((row[3] for row in rows), default=0.0),
+        }
 
     def _run(self):
         while not self._stop.is_set():

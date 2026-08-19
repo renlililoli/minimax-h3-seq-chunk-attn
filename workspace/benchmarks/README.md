@@ -63,6 +63,34 @@ configuration OOMed in the MLP at `silu(gate) * up`. Reducing layer residency to
 4 GiB left sufficient room for full-sequence activations and completed normally.
 # MiniMax-H3 sequence-streaming benchmarks
 
+## Ref2VA 768p end-to-end points
+
+`minimax_h3_bench/ref2va_point.py` runs a real Ref2VA video-and-audio reference
+through reference encoding, multimodal text encoding, packed-sequence
+construction, the complete DiT, both VAE decoders, and MP4 mux. It records
+20 ms PID NVML/RSS traces, phase timings, exact token composition, Torch peaks,
+per-step memory, streaming planner metrics, and optional final latents.
+
+The fixed comparison task is 1344x768, 243 frames, 24 fps, and 158,208 packed
+tokens. Run all two-step points serially on the GPU3 container:
+
+```bash
+workspace/benchmarks/run_ref2va_768p_serial.sh two-step
+```
+
+The controller intentionally uses one physical GPU at a time. `full` starts a
+50-step Streaming 8G generation after the short experiment and documentation
+have been validated:
+
+```bash
+workspace/benchmarks/run_ref2va_768p_serial.sh full
+```
+
+Generate the JSON summary and SVG charts with
+`minimax_h3_bench/ref2va_report.py`. The measured protocol and limitations are
+documented in
+`docs/minimax_h3_ref2va_768p_activation_capacity_2026-08-19.md`.
+
 正式协议代码位于 `minimax_h3_bench/`。核心约束是：每个点独立进程、NVML-aware
 allocator、CPU/DRAM weight offload、原子 JSON，以及只从 JSON 聚合结果。
 当前 PID 显存由持久 `pynvml` handle 采样；只有 NVML 不可用时才回退到

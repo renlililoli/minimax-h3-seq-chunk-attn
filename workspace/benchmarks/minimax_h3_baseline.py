@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible baseline runner for the unmodified DiffSynth MiniMax-H3 path."""
+"""Reproducible runner for DiffSynth MiniMax-H3 execution modes."""
 
 import argparse
 import os
@@ -8,7 +8,6 @@ import resource
 import subprocess
 import time
 import traceback
-from collections import Counter
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +19,10 @@ from benchmarks.minimax_h3_bench.protocol import (
     classify_exception,
     initialize_vram_budget,
 )
+from benchmarks.minimax_h3_bench.telemetry import (
+    cuda_module_storage_summary,
+    synchronize,
+)
 from diffsynth.core.attention.streaming import StreamingStats
 from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline, ModelConfig
 from diffsynth.utils.data.audio_video import write_video_audio
@@ -28,43 +31,6 @@ PROMPT = (
     "A girl is very happy, she is speaking in english: “I enjoy working with "
     "Diffsynth-Studio, it's a perfect framework.”"
 )
-
-
-def synchronize():
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
-def cuda_module_storage_summary(module):
-    """Return CUDA storage held directly by a module at a step boundary."""
-    seen = set()
-    storage_bytes = 0
-    tensor_count = 0
-    for tensor in (*module.parameters(), *module.buffers()):
-        if tensor is None or tensor.device.type != "cuda":
-            continue
-        storage = tensor.untyped_storage()
-        key = (tensor.device.index, storage.data_ptr(), storage.nbytes())
-        if key in seen:
-            continue
-        seen.add(key)
-        storage_bytes += storage.nbytes()
-        tensor_count += 1
-
-    wrapper_states = Counter()
-    preparing_enabled = Counter()
-    for child in module.modules():
-        attributes = vars(child)
-        if "state" not in attributes or "preparing_enabled" not in attributes:
-            continue
-        wrapper_states[str(attributes["state"])] += 1
-        preparing_enabled[str(bool(attributes["preparing_enabled"]))] += 1
-    return {
-        "dit_cuda_storage_mib": storage_bytes / 2**20,
-        "dit_cuda_tensor_count": tensor_count,
-        "dit_wrapper_state_counts": dict(wrapper_states),
-        "dit_wrapper_preparing_enabled_counts": dict(preparing_enabled),
-    }
 
 
 class StepTimer:
@@ -273,6 +239,9 @@ def main():
     )
     parser.add_argument("--activation-streaming", action="store_true")
     parser.add_argument("--projection-chunk-size", type=int, default=2048)
+    parser.add_argument("--mlp-chunk-size", type=int, default=None)
+    parser.add_argument("--final-layer-chunk-size", type=int, default=None)
+    parser.add_argument("--embedding-chunk-size", type=int, default=None)
     parser.add_argument("--attention-q-block-size", type=int, default=2048)
     parser.add_argument("--attention-kv-block-size", type=int, default=512)
     parser.add_argument(
@@ -285,6 +254,15 @@ def main():
         type=int,
         default=1024,
         help="CUDA workspace owned by seqattn; excludes model weights and caller allocations.",
+    )
+    parser.add_argument(
+        "--streaming-activation-workspace-mib",
+        type=int,
+        default=None,
+        help=(
+            "Total model-owned CUDA activation budget. When set, the H3 planner "
+            "derives SeqAttn and per-phase chunk sizes; auto selects seqattn."
+        ),
     )
     parser.add_argument(
         "--seqattn-q-chunk-tokens",
@@ -544,10 +522,14 @@ def main():
             progress_bar_cmd=progress_factory,
             activation_streaming=args.activation_streaming,
             projection_chunk_size=args.projection_chunk_size,
+            mlp_chunk_size=args.mlp_chunk_size,
+            final_layer_chunk_size=args.final_layer_chunk_size,
+            embedding_chunk_size=args.embedding_chunk_size,
             attention_q_block_size=args.attention_q_block_size,
             attention_kv_block_size=args.attention_kv_block_size,
             streaming_attention_backend=args.streaming_attention_backend,
             seqattn_workspace_mib=args.seqattn_workspace_mib,
+            streaming_activation_workspace_mib=args.streaming_activation_workspace_mib,
             seqattn_q_chunk_tokens=args.seqattn_q_chunk_tokens,
             seqattn_block_m=args.seqattn_block_m,
             seqattn_block_n=args.seqattn_block_n,
