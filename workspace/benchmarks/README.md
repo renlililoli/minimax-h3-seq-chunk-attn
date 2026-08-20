@@ -126,3 +126,65 @@ python3 -m workspace.benchmarks.minimax_h3_bench.run_point \
 
 `minimax_h3_baseline.py` 是早期 pipeline smoke/validation driver，历史 JSON 保留用于
 开发记录；它的输出不能与正式协议 JSON 混合聚合。
+
+## ComfyUI INT8/NVFP4 Ref2VA, strict 8 GiB
+
+`comfyui_minimax_h3_ref2va_8g.py` directly executes ComfyUI's native loaders,
+MiniMax-H3 Ref2VA conditioning, sampler, and VAEs with the downloaded ComfyUI
+weights. It uses an allocator-aware ComfyUI low-VRAM policy because the test is
+run on a 32 GiB GPU with a hard 8,192 MiB process budget. By default, the
+Qwen3-VL 32B NVFP4 text encoder uses ComfyUI's `NO_VRAM` dynamic patcher: weights
+remain in CPU memory and execute layer-by-layer on CUDA, then are fully unloaded
+before the DiT is loaded. Set `COMFYUI_TEXT_ENCODER_MODE=cpu` for the slower CPU
+fallback. Reference and output video VAE tensors are streamed between CPU and
+GPU using the VAE's stock temporal chunks and overlap rules.
+
+The August 20, 2026 validation point uses the same 768x1344, 243-frame source,
+seed 0, prompt, quantized weights, and one-step `res_multistep` sampler in both
+modes. The packed sequence contains 157,196 tokens.
+
+| Mode | Result | Denoise | Process peak | Output |
+|---|---|---:|---:|---|
+| native `--lowvram` | OOM requesting 1.57 GiB in the real denoise step | 96.77 s to failure | 7,696 MiB | none |
+| SeqAttn, 1,024 MiB workspace | success | 419.09 s | 7,696 MiB | 243-frame 768x1344 MP4 |
+
+The successful SeqAttn run used a 7,308 MiB Torch allocator limit after CUDA
+context and safety margin, versus 7,564 MiB for the native failure. Thus the
+streaming success had less allocator headroom, while both whole-process NVML
+peaks remained below 8,192 MiB.
+
+Run each point in an isolated container on GPU 1:
+
+```bash
+workspace/benchmarks/run_comfyui_ref2va_8g.sh native
+workspace/benchmarks/run_comfyui_ref2va_8g.sh streaming
+```
+
+For the same video-conditioned prompt, CPU text encoding took 553.17 seconds.
+GPU layer offload took 43.92 seconds on its first run and 24.17 seconds with the
+checkpoint in the OS page cache (12.6x to 22.9x faster). Both runs had a 7,982
+MiB process peak, remaining below the strict 8,192 MiB limit. The cached run
+then completed the real one-step SeqAttn denoise in 369.39 seconds without
+reloading or retaining the text encoder. Use
+`--stop-after-text-conditioning --skip-decode` to isolate this phase.
+
+Canonical result files are under
+`workspace/benchmarks/results/comfyui_ref2va_8g_20260820/`:
+
+- `comfyui_ref2va_native_8g_ws1024_768x1344_f243_s1_20260820T051400Z.json`
+- `comfyui_ref2va_streaming_8g_ws1024_768x1344_f243_s1_20260820T060432Z.json`
+- `comfyui_ref2va_streaming_8g_ws1024_768x1344_f243_s1_20260820T060432Z.mp4`
+- `comfyui_ref2va_streaming_8g_gpu_text_768x1344_f243_s1_20260820T070448Z.json`
+
+The forced `--lowvram` native mode above is an 8 GiB capacity diagnostic, not
+the historical ComfyUI baseline. The formal old-ComfyUI comparison uses the
+original `comfyui:cu128` server with `NORMAL_VRAM`, DynamicVRAM, and two-stream
+asynchronous weight offload. On the exact 157,196-token workload it reaches a
+31,590 MiB sampled process peak and OOMs in the first QKV projection while
+requesting another 6.30 GiB.
+
+Completed 26K-49K native points estimate a memory-unconstrained 157K native
+step at 232-294 seconds. The measured SeqAttn GPU-text run takes 369.39 seconds,
+or an estimated 1.25x-1.59x capacity tradeoff. Full methodology and limitations
+are documented in
+`docs/comfyui_minimax_h3_8g_vs_native_20260820.md`.

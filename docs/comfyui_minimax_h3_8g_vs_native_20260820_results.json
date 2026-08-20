@@ -1,0 +1,121 @@
+{
+  "experiment_date_utc": "2026-08-20",
+  "workload": {
+    "model": "MiniMax-H3 Ref2VA INT8 ConvRot",
+    "text_encoder": "Qwen3-VL 32B NVFP4 AWQ",
+    "width": 1344,
+    "height": 768,
+    "frames": 243,
+    "fps": 24,
+    "steps": 1,
+    "seed": 0,
+    "reference_audio": false,
+    "packed_tokens": 157196,
+    "segments": {
+      "text": 11234,
+      "reference_video": 72576,
+      "audio": 810,
+      "target_video": 72576
+    }
+  },
+  "seqattn_strict_8g": {
+    "status": "success",
+    "text_encoder_mode": "gpu-offload",
+    "activation_workspace_mib": 1024,
+    "kv_chunk_tokens": 4096,
+    "denoise_seconds": 369.39145837002434,
+    "nvml_process_peak_mib": 7982.0,
+    "torch_peak_allocated_mib": 4225.4970703125,
+    "torch_peak_reserved_mib": 5766.0,
+    "decode_skipped": true,
+    "source_result": "workspace/benchmarks/results/comfyui_ref2va_8g_20260820/comfyui_ref2va_streaming_8g_gpu_text_768x1344_f243_s1_20260820T070448Z.json"
+  },
+  "seqattn_generated_media_run": {
+    "status": "success",
+    "denoise_seconds": 419.0906976549886,
+    "nvml_process_peak_mib": 7696.0,
+    "output_frames": 243,
+    "output_width": 1344,
+    "output_height": 768,
+    "source_result": "workspace/benchmarks/results/comfyui_ref2va_8g_20260820/comfyui_ref2va_streaming_8g_ws1024_768x1344_f243_s1_20260820T060432Z.json",
+    "source_video": "workspace/benchmarks/results/comfyui_ref2va_8g_20260820/comfyui_ref2va_streaming_8g_ws1024_768x1344_f243_s1_20260820T060432Z.mp4"
+  },
+  "old_comfyui_native_32g": {
+    "status": "oom",
+    "environment": {
+      "container": "comfyui:cu128",
+      "comfyui_version": "0.30.0",
+      "comfyui_revision": "9a9fdb10",
+      "pytorch": "2.10.0+cu128",
+      "comfy_kitchen": "0.2.26",
+      "comfy_aimdo": "0.4.11",
+      "vram_state": "NORMAL_VRAM",
+      "dynamic_vram": true,
+      "async_weight_offload_streams": 2
+    },
+    "nvml_process_peak_mib": 31590.0,
+    "prompt_seconds_to_failure": 66.87,
+    "completed_steps": 0,
+    "failure_site": "first transformer block qkv_proj INT8 linear output assembly",
+    "currently_allocated_gib": 26.83,
+    "requested_gib": 6.30,
+    "device_limit_gib": 31.36
+  },
+  "native_scaling_points": [
+    {
+      "frames": 39,
+      "packed_tokens": 26411,
+      "step_seconds": 12.31,
+      "nvml_process_peak_mib": 28298,
+      "fit": true
+    },
+    {
+      "frames": 56,
+      "packed_tokens": 37563,
+      "step_seconds": 19.15,
+      "nvml_process_peak_mib": 31722,
+      "fit": true,
+      "run_state": "warm"
+    },
+    {
+      "frames": 73,
+      "packed_tokens": 48717,
+      "step_seconds": 28.21,
+      "nvml_process_peak_mib": 29576,
+      "fit": true
+    },
+    {
+      "frames": 90,
+      "packed_tokens": 58853,
+      "step_seconds": 172.49,
+      "nvml_process_peak_mib": 31494,
+      "fit": false,
+      "exclusion_reason": "DynamicVRAM memory cliff"
+    }
+  ],
+  "native_target_estimate": {
+    "quadratic_plus_linear_seconds": 232.05667160395095,
+    "largest_stable_point_n2_seconds": 293.7142345931833,
+    "estimated_range_seconds": [232.0, 294.0],
+    "seqattn_overhead_ratio_range": [1.25, 1.59],
+    "classification": "extrapolated, not measured"
+  },
+  "text_conditioning": {
+    "cpu_seconds": 553.17,
+    "gpu_offload_first_seconds": 43.92,
+    "gpu_offload_cached_seconds": 24.17,
+    "gpu_offload_process_peak_mib": 7982.0,
+    "cached_speedup_vs_cpu": 22.9
+  },
+  "profile": {
+    "instrumented_forward_seconds": 307.66,
+    "streamed_attention_seconds": 190.74,
+    "qkv_projection_seconds": 50.58,
+    "mlp_seconds": 54.63,
+    "logical_h2d_tib": 2.02,
+    "logical_d2h_tib": 0.38,
+    "standalone_projected_attention_seconds": 3.642,
+    "comfyui_projected_attention_seconds": 4.603,
+    "comfyui_projected_overhead_percent": 26.4
+  }
+}

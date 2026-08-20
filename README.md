@@ -1,202 +1,183 @@
-# MiniMax-H3 sequence streaming
+# ComfyUI MiniMax-H3 SeqAttn
 
-> Run a 10.125-second, 768p MiniMax-H3 Ref2VA workflow under an 8 GiB
-> whole-process GPU target.
+> Run long MiniMax-H3 video sequences with exact CPU-backed streaming
+> attention and existing ComfyUI quantized weights.
 
-[![seqattn](https://img.shields.io/badge/operator-seqattn-22d3ee?style=for-the-badge)](https://github.com/renlililoli/stream-attn)
-[![GPU](https://img.shields.io/badge/GPU-RTX%205090-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](#ref2va-768p-capacity-result)
-[![Precision](https://img.shields.io/badge/weights-NF4-8b5cf6?style=for-the-badge)](#ref2va-768p-capacity-result)
-[![Task](https://img.shields.io/badge/Ref2VA-1344%C3%97768-0f766e?style=for-the-badge)](#ref2va-768p-capacity-result)
-[![Status](https://img.shields.io/badge/158K%20tokens-8GiB%20passed-22c55e?style=for-the-badge)](#ref2va-768p-capacity-result)
+[![ComfyUI](https://img.shields.io/badge/runtime-ComfyUI-111827?style=for-the-badge)](#run-with-comfyui)
+[![GPU](https://img.shields.io/badge/tested-RTX%205090-76b900?style=for-the-badge&logo=nvidia&logoColor=white)](#strict-8-gib-result)
+[![Weights](https://img.shields.io/badge/weights-INT8%20%2B%20NVFP4-7c3aed?style=for-the-badge)](#supported-models)
+[![Capacity](https://img.shields.io/badge/157K%20tokens-8%20GiB%20passed-16a34a?style=for-the-badge)](#strict-8-gib-result)
 
-This repository integrates the standalone
-[`seqattn`](https://github.com/renlililoli/stream-attn) operator with
-MiniMax-H3 in DiffSynth-Studio. Complete Q/K/V and model hidden activations can
-live in CPU DRAM while GPU HBM holds a planned working set for embedding, QKV
-projection, attention, MLP, and the final layer. The result is activation
-capacity control across the complete DiT, not only an isolated attention call.
+This branch adds a native ComfyUI custom node that replaces MiniMax-H3's
+full-sequence attention and activation path with `seqattn`. Model hidden
+states and complete Q/K/V tensors are backed by pinned CPU memory while the
+GPU holds a bounded working set for projection, attention, MLP, and output
+assembly.
 
-## Ref2VA 768p capacity result
+The attention remains exact dense attention. Existing ComfyUI checkpoints do
+not need to be converted.
 
-<p align="center">
-  <img src="docs/assets/minimax-h3-ref2va-768p-comparison.svg" alt="MiniMax-H3 768p Ref2VA memory and timing comparison" width="100%">
-</p>
+## Strict 8 GiB result
 
-A real `video_audio` reference drives a same-duration output at 1344x768,
-24 fps, and 243 frames. The processor and VAE encoders produce 158,208 packed
-tokens. All points use the same Ref2VA NF4 checkpoint, source media, prompt,
-seed, scheduler, CPU weight backing, and physical RTX 5090 GPU3.
+The validated Ref2VA workload uses a real 243-frame reference video and a
+243-frame target at 1344x768 and 24 fps. Its packed sequence contains 157,196
+tokens:
 
-| Two-step full workflow | Streaming · 8 GiB target | Native · 8 GiB target | Native · unrestricted 32 GiB |
-|---|---:|---:|---:|
-| Status | **Success** | **OOM before step 1** | **Success** |
-| PID NVML peak | **8,138 MiB** | 8,144 MiB before failure | 32,092 MiB |
-| CPU RSS peak | 68,512 MiB | 23,101 MiB | 42,463 MiB |
-| Two-step DiT | 603.730 s | Not completed | 432.982 s |
-| Steady second step | 226.618 s | Not reached | 199.604 s |
-| Pipeline call | 879.935 s | Failed | 523.988 s |
-| Output | 243 frames + audio + MP4 | None | 243 frames + audio + MP4 |
+| Segment | Tokens |
+|---|---:|
+| Text | 11,234 |
+| Reference video | 72,576 |
+| Audio | 810 |
+| Target video | 72,576 |
+| **Total** | **157,196** |
 
-Streaming uses **74.64% less process GPU memory**, reducing the successful peak
-by **3.94x**. Its second denoise step is 1.135x slower than native; the complete
-pipeline is 1.679x slower because the strict memory target also affects
-reference VAE encoding and final video decode. The cost is explicit: CPU RSS
-increases by 25.44 GiB and two steps move 2,379 GiB logical H2D plus 954 GiB
-logical D2H traffic.
-
-This is a capacity and performance experiment using two denoise steps, not a
-visual-quality comparison. The 8 GiB point is an NVML-aware logical budget on a
-32 GiB RTX 5090, with only 54 MiB observed headroom. Full protocol, token
-composition, phase timing, memory timelines, numerical comparison, and
-reproduction commands are in the
-[768p Ref2VA report](docs/minimax_h3_ref2va_768p_activation_capacity_2026-08-19.md).
-
-## Standalone and long-sequence results
-
-<p align="center">
-  <img src="docs/assets/minimax-h3-262k-streaming-optimization.svg" alt="MiniMax-H3 262K streaming optimization comparison" width="100%">
-</p>
-
-| Experiment | Baseline / prior path | `seqattn` | Improvement |
-|---|---:|---:|---:|
-| 262,720-token optimized full DiT | 806.465 s | **570.980 s** | **29.20% faster / 1.412x** |
-| 262,720-token CPU RSS peak | 66,048 MiB | **57,769 MiB** | **8,279 MiB lower** |
-| 262,720-token logical PCIe traffic | 6,052.6 GiB | **5,219.5 GiB** | **833.1 GiB less/step** |
-| 15,104-token full generation | 20,970 MiB | **4,748 MiB under 6GiB** | **77.36% / 4.42× lower** |
-| 15,104-token 50-step DiT | **227.83 s** | 764.31 s | 3.35× capacity tradeoff |
-| 132,288-token 50-step attempt | **OOM after 14 steps** | **50/50 DiT steps completed** | native cannot finish denoise |
-| 132,288-token GPU peak | 30,876 MiB | **about 7,166 MiB** | **about 4.31× lower** |
-
-The new largest completed point extends the README 720p workload to 957
-frames, which produces 262,720 packed tokens. One BF16 Q, K, or V tensor is
-3.508GiB; complete Q/K/V is 10.523GiB and Q/K/V/output is 14.031GiB. The
-current automatic Blackwell kernel plus fused MLP completes all 50 DiT blocks
-in 570.980 seconds under the same 8,192MiB process target. The prior
-`64x64/4/2` kernel plus split MLP takes 806.465 seconds. Both are CPU-DRAM-backed
-streaming runs; this comparison does not use the paged or NVMe runtime.
-
-The completed 132K capacity probe executes all 50 DiT blocks for one denoise
-step under an 8,192MiB whole-process target.  It takes 236.39 seconds and peaks
-at 5,968MiB PID-level NVML memory.  The input requested as 720×1280 and 480
-frames is aligned by H3 to 736×1280 and 481 frames: 20.04 seconds at 24fps and
-132,288 packed tokens.
-
-The completed 6GiB run provides the end-to-end success point: 480×832, 124
-frames, 15,104 packed tokens, 50 denoise steps, both VAE decoders, and MP4 mux.
-It peaks at 4,748MiB PID-level NVML memory and finishes the pipeline in 798.94
-seconds.  The validated output is H.264 832×480 with 124 frames and AAC stereo
-audio.  A sequential native run on the same physical GPU completes the same
-workload in 305.04 seconds but peaks at 20,970MiB.  Both generated videos and
-the complete protocol are in the [15K native-vs-seqattn report](docs/minimax_h3_native_vs_seqattn_15k.md).
-
-## Completed 15K comparison
-
-The formal 15K video-generation points were run sequentially on the same
-physical RTX 5090 with the same image, NF4 checkpoint, prompt, seed, input, and
-scheduler.  Native DiffSynth is unrestricted; `seqattn` has a strict 6GiB
-whole-process target.  Both points completed all 50 denoise steps, both VAE
-decoders, and MP4 mux.
-
-| Completed run · August 18, 2026 UTC | Native DiffSynth | `seqattn` · 6GiB |
+| Exact workload | SeqAttn ComfyUI, strict 8 GiB | Native ComfyUI, RTX 5090 32 GB |
 |---|---:|---:|
-| Completed workflow | 50 steps + dual VAE + MP4 | 50 steps + dual VAE + MP4 |
-| 50-step DiT | **227.833 s** | 764.313 s |
-| Median step | **4.428 s** | 14.637 s |
-| Full pipeline | **305.038 s** | 798.938 s |
-| PID-level NVML peak | 20,970 MiB | **4,748 MiB** |
-| CPU RSS peak | **35,164 MiB** | 38,697 MiB |
+| One denoise step | **Completed in 369.39 s** | OOM in the first QKV projection |
+| Process GPU peak | **7,982 MiB** | 31,590 MiB before failure |
+| Immediate allocation | 1,024 MiB planned workspace | Requested another 6.30 GiB |
+| Compute-only target estimate | Measured | 232-294 s/step, extrapolated |
 
-Native is 3.35× faster for the 50-step DiT when the sequence fits.  `seqattn`
-uses only 22.64% of the native PID peak, stays 1,396MiB below its 6GiB target,
-and completes the same generated-media workflow.  This is a capacity result:
-CPU RSS and PCIe traffic increase, and the implementation does not claim a
-speed advantage over native FlashAttention at this sequence length.
+Native ComfyUI uses `NORMAL_VRAM`, DynamicVRAM, and two-stream asynchronous
+weight offload in this comparison. It cannot materialize the full-sequence QKV
+result on a device with 31.36 GiB usable memory. SeqAttn uses 74.7% less
+process GPU memory than the native pre-OOM peak and completes the step below
+8 GiB.
 
-| Generated media | Link |
-|---|---|
-| Native DiffSynth | [▶ 832×480, 124-frame MP4](docs/media/minimax_h3_15k_native.mp4) |
-| `seqattn` · 6GiB | [▶ 832×480, 124-frame MP4](docs/media/minimax_h3_15k_seqattn_6gb.mp4) |
+Because native cannot finish the exact workload, its target time is estimated
+from completed 26K-49K-token runs. The measured SeqAttn step is approximately
+1.25x-1.59x slower than that compute-only estimate. This is a capacity result,
+not a claimed speedup over native attention.
 
-The separate 132,288-token stress test has a different boundary: native OOMs
-while starting step 15, whereas `seqattn` completes all 50 DiT steps in
-11,941.56 seconds with an approximately 7,166MiB DiT peak.  Its subsequent
-Video VAE assembly OOM is retained as a failure; it is not reported as a full
-end-to-end video success.
+A separate validation completed denoise, VAE decode, and a 243-frame MP4 under
+the same 8 GiB target. Cached GPU layer offload reduced Qwen3-VL text
+conditioning from 553.17 s on CPU to 24.17 s without retaining the text
+encoder during DiT denoising.
 
-## Native memory residency
+See the [complete experiment report](docs/comfyui_minimax_h3_8g_vs_native_20260820.md)
+for the protocol, native scaling points, profiler breakdown, artifacts, and
+measurement limitations. The canonical summary is also available as
+[JSON](docs/comfyui_minimax_h3_8g_vs_native_20260820_results.json).
 
-The native run also uses CPU/DRAM weight offload; it is not keeping the whole
-checkpoint in GPU memory.  During the denoise loop only the DiT is active.  The
-text encoder and both VAEs are offloaded and are not part of the 30,876MiB peak.
+## Supported models
 
-| During native DiT denoising | CPU DRAM | GPU HBM |
-|---|---|---|
-| Model weights | Inactive models and offloaded DiT NF4 backing weights | Prepared/current DiT layers |
-| Attention activations | — | Full hidden, residual, Q, K, V and attention output |
-| MLP activations | — | Full `fc1`, gate, up and product tensors |
-| Runtime | Python/checkpoint backing | CUDA context, FA workspace and Torch reserved cache |
+The current integration supports:
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/renlililoli/stream-attn/main/docs/assets/minimax-h3-native-residency.svg" alt="Native MiniMax-H3 memory residency" width="100%">
-</p>
+- Native ComfyUI `MiniMaxH3Model`.
+- T2VA, FL2VA, and Ref2VA packed layouts.
+- Comfy-Org pruned BF16 or ComfyUI-native quantized DiT checkpoints.
+- INT8 ConvRot MiniMax-H3 DiT weights.
+- NVFP4-AWQ or INT8 Qwen3-VL text encoders.
+- BF16 attention activations, regardless of checkpoint storage precision.
+- CUDA on Linux with batch size 1.
 
-For 132,288 BF16 tokens, full QKV is approximately 5.299GiB and the MLP `fc1`
-output is 7.065GiB.  The native failure requests 3.53GiB for the complete
-`SiLU(gate) * up` result.  Thus the immediate OOM is a sequence-activation
-allocation, not simultaneous residency of the encoder, DiT, and decoders.
+The tested downloaded model set uses:
+
+```text
+ComfyUI/models/
+|-- diffusion_models/
+|   `-- minimax_h3_ref2va_pruned_int8_convrot.safetensors
+|-- text_encoders/
+|   `-- qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+`-- vae/
+    |-- minimax_h3_video_vae_fp16.safetensors
+    `-- minimax_h3_audio_vae_fp32.safetensors
+```
+
+## Run with ComfyUI
+
+Clone the repository with the `seqattn` submodule:
+
+```bash
+git clone --branch feature/comfyui-minimax-h3-seqattn --recurse-submodules \
+  git@github.com:renlililoli/minimax-h3-seq-chunk-attn.git
+cd minimax-h3-seq-chunk-attn
+```
+
+The provided image extends a CUDA 12.8 ComfyUI base image named
+`comfyui:cu128`. Build and start the service with an existing ComfyUI models
+directory mounted into the container:
+
+```bash
+COMFYUI_MODELS_DIR=/path/to/ComfyUI/models \
+COMFYUI_OUTPUT_DIR=/path/to/ComfyUI/output \
+docker compose -f docker-compose.comfyui.yml up --build
+```
+
+Open ComfyUI on port `8188`. The bundled
+[`minimax_h3_seqattn_ref2va.json`](workflows/minimax_h3_seqattn_ref2va.json)
+workflow is mounted into ComfyUI's workflow directory by the Compose service.
+
+For a manual installation, install `extern/seqattn` into ComfyUI's Python
+environment and place
+[`ComfyUI-SeqAttn`](comfyui_custom_nodes/ComfyUI-SeqAttn) under
+`ComfyUI/custom_nodes/`.
+
+## Node usage
+
+Insert **MiniMax H3 SeqAttn** immediately after the MiniMax-H3 diffusion model
+loader and connect its `MODEL` output to the sampler.
+
+| Setting | Meaning | Validated 8 GiB value |
+|---|---|---:|
+| `activation_workspace_mib` | GPU workspace owned by SeqAttn | `1024` |
+| `kv_chunk_tokens` | K/V tokens transferred per tile | `4096` |
+| `planner_mode` | Resident-query planner | `fit` |
+| `enabled` | Return patched or original model | `true` |
+
+`activation_workspace_mib` is not a whole-process VRAM limit. Interactive
+ComfyUI also holds CUDA context, model layers, VAE tensors, allocator cache,
+and other node state. The strict 8 GiB result uses the benchmark runner's
+allocator-aware process budget in addition to the 1,024 MiB SeqAttn workspace.
+
+The custom node rejects non-MiniMax models. LoRA, diffusion-model replacement
+patches, NVMe activation backing, and multi-GPU execution are outside the
+current supported path.
+
+## Reproduce the benchmark
+
+The benchmark directly executes ComfyUI's native loaders, MiniMax-H3
+conditioning, sampler, and VAEs with the downloaded ComfyUI checkpoints:
+
+```bash
+workspace/benchmarks/run_comfyui_ref2va_8g.sh streaming
+workspace/benchmarks/run_comfyui_ref2va_8g.sh native
+```
+
+The scripts default to the model and reference-video mounts used by the test
+host. Adjust those mounts before running on another machine. Select the GPU and
+output directory with `COMFYUI_BENCH_GPU` and `COMFYUI_BENCH_OUTPUT_DIR`.
+
+Capture an Nsight Systems denoise profile with:
+
+```bash
+workspace/benchmarks/run_comfyui_ref2va_profile.sh
+```
+
+The measured forward spends 190.74 s, or 62.0%, in streamed attention; QKV
+projection takes 50.58 s and MLP takes 54.63 s. The full analysis is in the
+[ComfyUI SeqAttn profile](docs/comfyui_minimax_h3_seqattn_profile_20260820.md).
 
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `extern/seqattn` | Standalone Triton exact out-of-core attention operator |
-| `extern/DiffSynth-Studio` | MiniMax-H3 integration branch |
-| `workspace/benchmarks` | Strict-memory runner, PID NVML sampler, JSON/trace output |
-| `docs` | Experiment protocol, failure history, interpretation, and limits |
+| `comfyui_custom_nodes/ComfyUI-SeqAttn` | ComfyUI extension and tests |
+| `extern/seqattn` | Exact CPU-backed streaming attention operator |
+| `workflows` | Importable ComfyUI workflows |
+| `workspace/benchmarks` | Strict-memory runner, profiler, and result tooling |
+| `docs` | ComfyUI experiment reports and machine-readable summaries |
+| `Dockerfile.comfyui-seqattn` | ComfyUI image with SeqAttn installed |
+| `docker-compose.comfyui.yml` | GPU service and model/output mounts |
 
-Clone with both implementations:
+## Limitations
 
-```bash
-git clone --recurse-submodules git@github.com:renlililoli/minimax-h3-seq-chunk-attn.git
-```
-
-The Compose setup mounts both submodules and installs `seqattn` as an editable
-package in the DiffSynth image.
-
-## Why this differs from Stream-CQSA
-
-Both systems move complete Q/K/V outside GPU memory, but the execution model is
-different.  Stream-CQSA recursively creates overlapping combinatorial
-subsequences.  `seqattn` uses regular resident-Q × streamed-K/V scheduling:
-
-```text
-H2D = |Q| + resident_q_passes × (|K| + |V|)
-D2H = |projected output|
-```
-
-This gives deterministic K/V reuse within each resident query set, avoids a
-CPU FP32 full-sequence numerator accumulator, performs stable online-softmax
-merging in HBM, and supports direct attention→out-projection consumption.  The
-standalone [`seqattn` README](https://github.com/renlililoli/stream-attn)
-contains the full complexity comparison, API, limitations, and operator
-benchmarks.
-
-## Measurement boundary
-
-- Memory source of record: current-PID NVML samples every 100ms for the 262K
-  optimization comparison and every 2ms for the earlier 132K runs.
-- Weights: MiniMax-H3 FL2VA NF4; compute: BF16.
-- Offload backing: CPU DRAM, never disk.
-- Logical H2D/D2H values are instrumented traffic, not link-level counters.
-- Completed points are single-run system characterization without error bars.
-- Capacity is the current advantage; native FlashAttention remains faster when
-  the complete sequence fits comfortably in HBM.
-
-Detailed reports:
-
-- [768p, 243-frame Ref2VA: native 8 GiB OOM vs. streaming 8 GiB success](docs/minimax_h3_ref2va_768p_activation_capacity_2026-08-19.md)
-- [262K old-vs-current streaming optimization comparison](docs/minimax_h3_rtx5090_262k_streaming_optimization_2026-08-19.md)
-- [15K native vs. strict-6GiB `seqattn`, with generated videos](docs/minimax_h3_native_vs_seqattn_15k.md)
-- [8GB / 61K end-to-end experiment](docs/minimax_h3_8gb_61k_end_to_end_experiment.md)
-- [Exclusive-GPU native rerun procedure](docs/exclusive_gpu_benchmark.md)
-- [Standalone H3 integration report](https://github.com/renlililoli/stream-attn/blob/main/docs/minimax_h3_integration.md)
+- CPU DRAM capacity and PCIe bandwidth replace GPU activation capacity as the
+  main resource constraints.
+- Long sequences are slower than native GPU attention when native fits in HBM.
+- The 8 GiB measurements are single-run system characterization on an RTX
+  5090, not cross-GPU performance guarantees.
+- The native 157K target time is extrapolated because native OOMs before
+  completing one step.
+- The current path uses CPU DRAM for activations; it does not page activations
+  to NVMe.

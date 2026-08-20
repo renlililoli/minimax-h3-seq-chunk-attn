@@ -1,0 +1,10 @@
+FROM comfyui:cu128
+
+COPY extern/seqattn /opt/seqattn
+RUN python -m pip install --no-cache-dir -e /opt/seqattn
+
+COPY comfyui_custom_nodes/ComfyUI-SeqAttn /opt/ComfyUI/custom_nodes/ComfyUI-SeqAttn
+
+WORKDIR /opt/ComfyUI
+EXPOSE 8188
+CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]

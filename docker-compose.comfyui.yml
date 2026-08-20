@@ -1,0 +1,21 @@
+services:
+  comfyui-seqattn:
+    build:
+      context: .
+      dockerfile: Dockerfile.comfyui-seqattn
+    image: comfyui-seqattn:cu128
+    ports:
+      - "8188:8188"
+    volumes:
+      - ${COMFYUI_MODELS_DIR:-./models}:/opt/ComfyUI/models
+      - ${COMFYUI_OUTPUT_DIR:-./output}:/opt/ComfyUI/output
+      - ./workflows:/opt/ComfyUI/user/default/workflows
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ipc: host
+    restart: unless-stopped
