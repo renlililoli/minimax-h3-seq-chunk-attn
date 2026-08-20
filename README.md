@@ -15,6 +15,68 @@ conversion.
 Supported layouts: T2VA, FL2VA, and Ref2VA. A 157,196-token, 243-frame,
 1344x768 Ref2VA denoise step has been validated below an 8 GiB process target.
 
+## 8 GiB Ref2VA Demo
+
+The standalone community package completed a real **20-step MiniMax-H3
+Ref2VA generation** at 1344x768 with 243 reference frames and 243 output
+frames. The combined text, reference-video, audio, and target-video layout is
+157,196 tokens. Whole-process GPU memory peaked at **7,982 MiB** on an RTX
+5090.
+
+### Generated Output
+
+[![Animated preview of the generated 20-step Ref2VA output](assets/benchmark/seqattn_ref2va_8g_20step_1344x768_243f_preview.webp)](assets/benchmark/seqattn_ref2va_8g_20step_1344x768_243f.mp4)
+
+Animated 8 fps preview. Click it to open the full-resolution 24 fps MP4.
+
+### Reference Video
+
+[![Animated preview of the Ref2VA reference video](assets/benchmark/ref2va_reference_1344x768_243f_preview.webp)](assets/benchmark/ref2va_reference_1344x768_243f.mp4)
+
+Animated 8 fps preview. Click it to open the full-resolution 24 fps MP4 with
+the original AAC audio track.
+
+| Clean community-package run | Result |
+|---|---:|
+| Status | **20/20 denoise steps completed** |
+| Whole-process GPU peak | **7,982 MiB NVML** |
+| GPU headroom to 8,192 MiB target | **210 MiB** |
+| Denoise time | **5,536.855 s / 92m 16.855s** |
+| Mean denoise time | **276.843 s / 4m 36.843s per step** |
+| Complete pipeline | **5,691.244 s / 94m 51.244s** |
+| CPU RSS peak | **59.76 GiB** |
+| Output | **H.264, 1344x768, 243 frames, 24 fps, 10.125 s** |
+
+The same 157,196-token workload previously caused the historical native
+ComfyUI path to OOM in its first QKV projection on a 32 GB RTX 5090, after a
+31,590 MiB sampled process peak. SeqAttn trades CPU DRAM and runtime for the
+ability to complete the long-video workload with a bounded GPU working set;
+this is a capacity result, not a native-attention speedup claim.
+
+<details>
+<summary><strong>Prompt and validation details</strong></summary>
+
+```text
+Use <Video 1> as the exact motion, camera, subject, and scene reference. Continue it as one coherent cinematic shot with natural motion, stable identity, photorealistic detail, synchronized ambient sound, no cuts, no text, no logos.
+```
+
+- Model: MiniMax-H3 Ref2VA INT8 ConvRot DiT
+- Text encoder: Qwen3-VL 32B NVFP4 AWQ with GPU layer offload
+- SeqAttn workspace: 1,024 MiB
+- K/V tile: 4,096 tokens
+- Seed: 0
+- GPU/CPU memory sampling interval: 20 ms
+- The generated benchmark MP4 contains video only; the reference MP4 also has
+  an AAC audio stream.
+- Measurements are from one run on August 20, 2026 UTC and have no error bars.
+
+</details>
+
+The full protocol, phase timings, packed-token layout, all persisted GPU/CPU
+memory measurements, checksums, raw JSON, and measurement limitations are in
+the
+[development-branch technical report](https://github.com/renlililoli/minimax-h3-seq-chunk-attn/blob/feature/comfyui-minimax-h3-seqattn/docs/comfyui_minimax_h3_seqattn_8g_20step_20260820.md).
+
 ## Install
 
 ### ComfyUI Manager
