@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        comfyui-version: [v0.30.0, v0.30.2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install CPU PyTorch
+        run: >-
+          python -m pip install
+          --index-url https://download.pytorch.org/whl/cpu
+          torch torchvision torchaudio
+
+      - name: Install ComfyUI and test dependencies
+        run: |
+          git clone --depth 1 --branch "${{ matrix.comfyui-version }}" \
+            https://github.com/Comfy-Org/ComfyUI.git ComfyUI
+          python -m pip install -r ComfyUI/requirements.txt
+          python -m pip install -e '.[dev]'
+
+      - name: Static checks
+        run: |
+          ruff check __init__.py comfyui_seqattn tests
+          python -m build
+
+      - name: Unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}
+        run: pytest -q

@@ -1,6 +1,0 @@
-.git
-.pytest_cache
-**/__pycache__
-extern/DiffSynth-Studio
-workspace/benchmarks/results
-*.nsys-rep

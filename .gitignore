@@ -1,4 +1,12 @@
 __pycache__/
-workspace/benchmarks/results/
-workspace/benchmarks/artifacts/
-sessions/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local leftovers from the development worktree are not part of this branch.
+/comfyui_custom_nodes/
+/docs/
+/extern/
+/scripts/
+/workspace/
