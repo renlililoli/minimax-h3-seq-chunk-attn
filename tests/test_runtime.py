@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
 
 
@@ -44,6 +47,37 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
     clone = runtime.clone()
     assert clone.settings == runtime.settings
     assert clone.cache_size == 0
+    assert clone.refined_conditioning_cache_stats["entries"] == 0
     assert runtime.cache_size == 1
     runtime.clear()
     assert runtime.cache_size == 0
+    assert runtime.refined_conditioning_cache_stats["entries"] == 0
+
+
+def test_refined_conditioning_fallback_key_uses_tensor_content_and_metadata():
+    model = SimpleNamespace(
+        hidden_size=8,
+        condition_proj=torch.nn.Linear(4, 8),
+        token_refiner=torch.nn.Sequential(torch.nn.Linear(8, 8)),
+    )
+    first = torch.arange(12, dtype=torch.bfloat16).reshape(3, 4)
+    same = first.clone()
+    changed = first.clone()
+    changed[0, 0] += 1
+
+    first_key = streaming._refined_conditioning_cache_key(model, first, {})
+    same_key = streaming._refined_conditioning_cache_key(model, same, {})
+    changed_key = streaming._refined_conditioning_cache_key(model, changed, {})
+    float_key = streaming._refined_conditioning_cache_key(
+        model, first.float(), {}
+    )
+
+    assert first_key == same_key
+    assert first_key != changed_key
+    assert first_key != float_key
+    assert (
+        streaming._refined_conditioning_cache_key(
+            model, first, {"patches": {"attention": object()}}
+        )
+        is None
+    )

@@ -32,11 +32,12 @@ class SeqAttnSettings:
 
 
 class SeqAttnRuntime:
-    """Per-patched-model runner cache.
+    """Per-patched-model runner and refined-conditioning cache.
 
     ProjectedAttentionRunner is single-flight, and ComfyUI can retain a patched
     MODEL across queues. The lock covers one complete H3 forward while the
-    cache reuses its expensive pinned Q/K/V allocations across denoising steps.
+    caches reuse expensive pinned allocations and prompt-only refiner work
+    across denoising steps.
     """
 
     def __init__(self, settings: SeqAttnSettings):
@@ -44,6 +45,12 @@ class SeqAttnRuntime:
         self.settings = settings
         self.lock = threading.RLock()
         self._runners: dict[tuple, ProjectedAttentionRunner] = {}
+        self._refined_conditioning_key: tuple | None = None
+        self._refined_conditioning: torch.Tensor | None = None
+        self._refined_conditioning_hits = 0
+        self._refined_conditioning_misses = 0
+        self._refined_conditioning_stores = 0
+        self._refined_conditioning_bypasses = 0
 
     def clone(self) -> "SeqAttnRuntime":
         return SeqAttnRuntime(self.settings)
@@ -52,8 +59,63 @@ class SeqAttnRuntime:
     def cache_size(self) -> int:
         return len(self._runners)
 
+    @property
+    def refined_conditioning_cache_stats(self) -> dict[str, int]:
+        with self.lock:
+            cached = self._refined_conditioning
+            return {
+                "hits": self._refined_conditioning_hits,
+                "misses": self._refined_conditioning_misses,
+                "stores": self._refined_conditioning_stores,
+                "bypasses": self._refined_conditioning_bypasses,
+                "entries": int(cached is not None),
+                "host_bytes": (
+                    cached.numel() * cached.element_size()
+                    if cached is not None
+                    else 0
+                ),
+            }
+
     def clear(self) -> None:
-        self._runners.clear()
+        with self.lock:
+            self._runners.clear()
+            self._refined_conditioning_key = None
+            self._refined_conditioning = None
+            self._refined_conditioning_hits = 0
+            self._refined_conditioning_misses = 0
+            self._refined_conditioning_stores = 0
+            self._refined_conditioning_bypasses = 0
+
+    def refined_conditioning_for(self, key: tuple) -> torch.Tensor | None:
+        with self.lock:
+            if (
+                self._refined_conditioning is not None
+                and self._refined_conditioning_key == key
+            ):
+                self._refined_conditioning_hits += 1
+                return self._refined_conditioning
+            self._refined_conditioning_misses += 1
+            return None
+
+    def store_refined_conditioning(
+        self, key: tuple, conditioning: torch.Tensor
+    ) -> None:
+        if conditioning.device.type != "cpu":
+            raise ValueError("refined conditioning cache must be CPU-resident")
+        if conditioning.dtype != torch.bfloat16:
+            raise ValueError("refined conditioning cache must use BF16")
+        if not conditioning.is_pinned():
+            raise ValueError("refined conditioning cache must use pinned memory")
+        if not conditioning.is_contiguous():
+            raise ValueError("refined conditioning cache must be contiguous")
+        with self.lock:
+            self._refined_conditioning_key = key
+            self._refined_conditioning = conditioning
+            self._refined_conditioning_stores += 1
+
+    def record_refined_conditioning_bypass(self) -> None:
+        with self.lock:
+            self._refined_conditioning_bypasses += 1
 
     def runner_for(
         self,

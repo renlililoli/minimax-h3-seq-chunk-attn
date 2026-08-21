@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 
 import comfy.ldm.common_dit
@@ -122,8 +123,77 @@ def _copy_projected_rows(
         projected.record_stream(torch.cuda.current_stream(device))
 
 
+def _tensor_version(tensor: torch.Tensor) -> int | None:
+    try:
+        return tensor._version
+    except RuntimeError:
+        return None
+
+
+def _refiner_parameter_signature(model: MiniMaxH3Model) -> tuple:
+    signature = []
+    for module in (model.condition_proj, model.token_refiner):
+        tensors = list(module.parameters()) + list(module.buffers())
+        signature.extend(
+            (
+                id(tensor),
+                _tensor_version(tensor),
+                tuple(tensor.shape),
+                tensor.dtype,
+            )
+            for tensor in tensors
+        )
+    return tuple(signature)
+
+
+def _tensor_content_digest(tensor: torch.Tensor) -> bytes:
+    host = tensor.detach().contiguous()
+    if host.device.type != "cpu":
+        host = host.cpu()
+    raw = host.view(torch.uint8).numpy()
+    return hashlib.blake2b(memoryview(raw), digest_size=16).digest()
+
+
+def _refined_conditioning_cache_key(
+    model: MiniMaxH3Model,
+    text_states: torch.Tensor,
+    transformer_options: dict,
+) -> tuple | None:
+    if transformer_options.get("patches") or transformer_options.get(
+        "patches_replace"
+    ):
+        return None
+
+    uuids = transformer_options.get("uuids")
+    if uuids:
+        conditioning_identity = (
+            "comfy-uuids",
+            tuple(str(value) for value in uuids),
+            tuple(transformer_options.get("cond_or_uncond", ())),
+        )
+    else:
+        conditioning_identity = (
+            "content",
+            _tensor_content_digest(text_states),
+        )
+
+    device = text_states.device
+    return (
+        conditioning_identity,
+        tuple(text_states.shape),
+        tuple(text_states.stride()),
+        text_states.dtype,
+        device.type,
+        device.index,
+        _tensor_version(text_states),
+        model.hidden_size,
+        _refiner_parameter_signature(model),
+    )
+
+
 def _embed_packed_hidden(
     model: MiniMaxH3Model,
+    runtime: SeqAttnRuntime,
     layout: PackedLayout,
     video_x: torch.Tensor,
     audio_x: torch.Tensor,
@@ -165,17 +235,45 @@ def _embed_packed_hidden(
         all_audio_rows[audio_update] = audio_rows
 
     text_states = context[0]
+    refined_cache_key = None
+    publish_refined_cache = False
     if text_states.shape[-1] != model.hidden_size:
-        text_states = model.token_refiner(
-            model.condition_proj(text_states), transformer_options=transformer_options
+        refined_cache_key = _refined_conditioning_cache_key(
+            model, text_states, transformer_options
         )
+        if refined_cache_key is None:
+            runtime.record_refined_conditioning_bypass()
+            refined = model.token_refiner(
+                model.condition_proj(text_states),
+                transformer_options=transformer_options,
+            )
+            text_states = _pinned_empty(refined.shape, torch.bfloat16)
+            text_states.copy_(refined.to(torch.bfloat16), non_blocking=True)
+            refined.record_stream(torch.cuda.current_stream(device))
+        else:
+            cached = runtime.refined_conditioning_for(refined_cache_key)
+            if cached is not None:
+                text_states = cached
+            else:
+                refined = model.token_refiner(
+                    model.condition_proj(text_states),
+                    transformer_options=transformer_options,
+                )
+                text_states = _pinned_empty(refined.shape, torch.bfloat16)
+                text_states.copy_(refined.to(torch.bfloat16), non_blocking=True)
+                refined.record_stream(torch.cuda.current_stream(device))
+                publish_refined_cache = True
 
     video_offset = 0
     audio_offset = 0
+    deferred_text_segments = []
     for start, stop, kind in layout.segments:
         count = stop - start
         if kind == "text":
-            hidden[start:stop].copy_(text_states.to(dtype), non_blocking=True)
+            if text_states.device.type == "cpu":
+                deferred_text_segments.append((start, stop))
+            else:
+                hidden[start:stop].copy_(text_states.to(dtype), non_blocking=True)
         elif kind in ("cond", "ref_img", "video"):
             rows = all_video_rows[video_offset : video_offset + count]
             _copy_projected_rows(
@@ -199,6 +297,10 @@ def _embed_packed_hidden(
             )
             audio_offset += count
     torch.cuda.synchronize(device)
+    if publish_refined_cache:
+        runtime.store_refined_conditioning(refined_cache_key, text_states)
+    for start, stop in deferred_text_segments:
+        hidden[start:stop].copy_(text_states)
     return hidden
 
 
@@ -436,6 +538,7 @@ def streaming_minimax_h3_forward(
         )
         hidden_a = _embed_packed_hidden(
             model,
+            runtime,
             layout,
             video_x,
             audio_x,

@@ -9,18 +9,25 @@ from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
 
 
-def _tiny_model(device, *, use_curves=False, num_layers=1):
+def _tiny_model(
+    device,
+    *,
+    use_curves=False,
+    num_layers=1,
+    token_refiner_num_layers=0,
+    text_dim=256,
+):
     model = MiniMaxH3Model(
         hidden_size=256,
         num_layers=num_layers,
-        token_refiner_num_layers=0,
+        token_refiner_num_layers=token_refiner_num_layers,
         num_attention_heads=2,
         attention_head_dim=128,
         ffn_hidden_size=512,
         latents_dim=2,
         audio_latents_dim=4,
         patch_size=(1, 2, 2),
-        text_dim=256,
+        text_dim=text_dim,
         timestep_input_dim=16,
         time_embed_hidden_size=32,
         time_embed_dim=32,
@@ -83,6 +90,128 @@ def test_one_block_native_streaming_parity():
     )
 
     _assert_outputs_close(actual, native)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@torch.inference_mode()
+def test_refined_conditioning_cached_across_denoising_calls():
+    torch.manual_seed(9)
+    device = torch.device("cuda")
+    model = _tiny_model(
+        device,
+        token_refiner_num_layers=1,
+        text_dim=128,
+    )
+    video = torch.randn((1, 2, 1, 4, 4), device=device, dtype=torch.bfloat16)
+    audio = torch.randn((1, 4, 2, 2), device=device, dtype=torch.bfloat16)
+    context = torch.randn((1, 3, 128), device=device, dtype=torch.bfloat16)
+    changed_context = context.clone()
+    changed_context[0, 0, 0] += 1
+    timesteps = [
+        torch.tensor([700.0], device=device),
+        torch.tensor([500.0], device=device),
+        torch.tensor([300.0], device=device),
+    ]
+
+    expected = [
+        model._forward(
+            [video, audio],
+            timesteps[0],
+            context,
+            transformer_options={},
+        ),
+        model._forward(
+            [video, audio],
+            timesteps[1],
+            context,
+            transformer_options={},
+        ),
+        model._forward(
+            [video, audio],
+            timesteps[2],
+            changed_context,
+            transformer_options={},
+        ),
+    ]
+    calls = {"condition_proj": 0, "token_refiner": 0}
+
+    def count_condition_proj(*_args):
+        calls["condition_proj"] += 1
+
+    def count_token_refiner(*_args):
+        calls["token_refiner"] += 1
+
+    hooks = [
+        model.condition_proj.register_forward_hook(count_condition_proj),
+        model.token_refiner.register_forward_hook(count_token_refiner),
+    ]
+    runtime = runtime_mod.SeqAttnRuntime(
+        runtime_mod.SeqAttnSettings(
+            activation_workspace_mib=128,
+            kv_chunk_tokens=64,
+            projection_chunk_tokens=4,
+        )
+    )
+    try:
+        actual = [
+            streaming.streaming_minimax_h3_forward(
+                model,
+                runtime,
+                [video, audio],
+                timesteps[0],
+                context,
+                transformer_options={"uuids": ["prompt-a"]},
+            ),
+            streaming.streaming_minimax_h3_forward(
+                model,
+                runtime,
+                [video, audio],
+                timesteps[1],
+                context,
+                transformer_options={"uuids": ["prompt-a"]},
+            ),
+            streaming.streaming_minimax_h3_forward(
+                model,
+                runtime,
+                [video, audio],
+                timesteps[2],
+                changed_context,
+                transformer_options={"uuids": ["prompt-b"]},
+            ),
+        ]
+    finally:
+        for hook in hooks:
+            hook.remove()
+
+    for actual_output, expected_output in zip(actual, expected):
+        _assert_outputs_close(actual_output, expected_output)
+    assert calls == {"condition_proj": 2, "token_refiner": 2}
+    cached = runtime._refined_conditioning
+    assert cached is not None
+    assert cached.device.type == "cpu"
+    assert cached.dtype == torch.bfloat16
+    assert cached.is_pinned()
+    assert runtime.refined_conditioning_cache_stats == {
+        "hits": 1,
+        "misses": 2,
+        "stores": 2,
+        "bypasses": 0,
+        "entries": 1,
+        "host_bytes": cached.numel() * cached.element_size(),
+    }
+
+    clone = runtime.clone()
+    assert clone.refined_conditioning_cache_stats["entries"] == 0
+    runtime.clear()
+    assert runtime._refined_conditioning is None
+    assert runtime.refined_conditioning_cache_stats == {
+        "hits": 0,
+        "misses": 0,
+        "stores": 0,
+        "bypasses": 0,
+        "entries": 0,
+        "host_bytes": 0,
+    }
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
