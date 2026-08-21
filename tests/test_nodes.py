@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import types
 from types import SimpleNamespace
 
 import comfy.patcher_extension
@@ -71,8 +70,10 @@ def _fake_video_vae():
     model = object.__new__(MiniMaxH3VideoVAE)
     model.vae_ratio = 16
     model.tile_size = 256
-    model.latents_mean = torch.tensor([1.0, -2.0])
-    model.latents_std = torch.tensor([2.0, 4.0])
+    model.latents_mean = torch.tensor([0.2, 0.3, 0.4])
+    model.latents_std = torch.tensor([0.1, 0.2, 0.3])
+    model.pixel_mean = torch.zeros((1, 3, 1, 1, 1))
+    model.pixel_std = torch.ones((1, 3, 1, 1, 1))
     vae = SimpleNamespace(
         first_stage_model=model,
         patcher=FakeVAEPatcher(model),
@@ -176,14 +177,12 @@ def test_video_vae_single_frame_decode_matches_native_and_restores_tile(
     model = vae.first_stage_model
     captured = {}
 
-    def native_decode(self, latent):
-        captured["latent"] = latent.clone()
-        captured["tile_size"] = self.tile_size
-        mean = self.latents_mean.view(1, -1, 1, 1, 1).to(latent)
-        std = self.latents_std.view(1, -1, 1, 1, 1).to(latent)
-        return latent * std + mean
+    def adaptive_decode(latent):
+        captured["denormalized_latent"] = latent.clone()
+        captured["tile_size"] = model.tile_size
+        return latent
 
-    object.__setattr__(model, "decode", types.MethodType(native_decode, model))
+    object.__setattr__(model, "_adaptive_decode", adaptive_decode)
     patched = nodes.patch_minimax_h3_video_vae(
         vae, tile_size=192, workspace_mib=512
     )
@@ -197,11 +196,15 @@ def test_video_vae_single_frame_decode_matches_native_and_restores_tile(
         "cuda_device_context",
         lambda _device: contextlib.nullcontext(),
     )
-    latent = torch.tensor([[[[[0.25]]], [[[0.5]]]]])
-    expected = native_decode(model, latent).movedim(1, -1)
+    latent = torch.tensor([[[[[0.5]]], [[[0.25]]], [[[-0.5]]]]])
+    expected = model.decode(latent).movedim(1, -1)
     actual = patched.decode(latent)
 
-    torch.testing.assert_close(captured["latent"], latent)
+    latent_mean = model.latents_mean.view(1, -1, 1, 1, 1)
+    latent_std = model.latents_std.view(1, -1, 1, 1, 1)
+    torch.testing.assert_close(
+        captured["denormalized_latent"], latent * latent_std + latent_mean
+    )
     torch.testing.assert_close(actual, expected)
     assert captured["tile_size"] == 192
     assert model.tile_size == 256
@@ -220,6 +223,14 @@ def test_video_vae_patched_branches_are_isolated():
     assert first.patcher is not second.patcher
     assert getattr(first, vae_mod.STATE_KEY).tile_size == 192
     assert getattr(second, vae_mod.STATE_KEY).tile_size == 160
+    disabled = nodes.MiniMaxH3VAEStreaming.execute(
+        first,
+        tile_size=128,
+        workspace_mib=256,
+        enabled=False,
+    ).result[0]
+    assert disabled is first
+    assert hasattr(first, vae_mod.STATE_KEY)
     vae_mod.unpatch_minimax_h3_video_vae(first)
     assert not hasattr(first, vae_mod.STATE_KEY)
     assert hasattr(second, vae_mod.STATE_KEY)
