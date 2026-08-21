@@ -7,6 +7,7 @@ from comfy_api.v0_0_2 import ComfyExtension, io
 from .minimax_h3 import streaming_minimax_h3_forward
 from .qwen import patch_minimax_h3_qwen_clip
 from .runtime import SeqAttnRuntime, SeqAttnSettings
+from .vae import patch_minimax_h3_video_vae, unpatch_minimax_h3_video_vae
 
 STATE_KEY = "minimax_h3_seqattn"
 
@@ -210,9 +211,61 @@ class MiniMaxH3QwenBF16Offload(io.ComfyNode):
         return io.NodeOutput(patched)
 
 
+class MiniMaxH3VAEStreaming(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MiniMaxH3VAEStreaming",
+            display_name="MiniMax H3 VAE Streaming",
+            description="Reduces native MiniMax-H3 video VAE spatial tiles to bound keyframe encode and video decode activation memory.",
+            category="model/patch/minimax",
+            is_experimental=True,
+            inputs=[
+                io.Vae.Input("vae"),
+                io.Int.Input(
+                    "tile_size",
+                    default=192,
+                    min=128,
+                    max=512,
+                    step=16,
+                ),
+                io.Int.Input(
+                    "workspace_mib",
+                    default=512,
+                    min=256,
+                    max=8192,
+                    step=256,
+                    advanced=True,
+                ),
+                io.Boolean.Input("enabled", default=True),
+            ],
+            outputs=[io.Vae.Output()],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        vae,
+        tile_size: int,
+        workspace_mib: int,
+        enabled: bool,
+    ) -> io.NodeOutput:
+        if not enabled:
+            return io.NodeOutput(unpatch_minimax_h3_video_vae(vae))
+        return io.NodeOutput(
+            patch_minimax_h3_video_vae(
+                vae, tile_size=tile_size, workspace_mib=workspace_mib
+            )
+        )
+
+
 class SeqAttnExtension(ComfyExtension):
     async def get_node_list(self):
-        return [MiniMaxH3SeqAttn, MiniMaxH3QwenBF16Offload]
+        return [
+            MiniMaxH3SeqAttn,
+            MiniMaxH3QwenBF16Offload,
+            MiniMaxH3VAEStreaming,
+        ]
 
 
 async def comfy_entrypoint():
@@ -222,8 +275,10 @@ async def comfy_entrypoint():
 __all__ = [
     "MiniMaxH3SeqAttn",
     "MiniMaxH3QwenBF16Offload",
+    "MiniMaxH3VAEStreaming",
     "SeqAttnExtension",
     "comfy_entrypoint",
     "minimax_h3_seqattn_wrapper",
     "patch_minimax_h3_model",
+    "patch_minimax_h3_video_vae",
 ]

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import comfy.patcher_extension
 import pytest
 from comfy.ldm.minimax.model import MiniMaxH3Model
+from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
 from comfyui_seqattn import nodes
 
@@ -108,3 +109,43 @@ def test_clone_and_cleanup_callbacks_manage_runtime():
     ):
         callback(patched)
     assert runtime.cache_size == 0
+
+
+def test_video_vae_tile_size_validation_and_patch():
+    vae = SimpleNamespace(
+        first_stage_model=object.__new__(MiniMaxH3VideoVAE),
+        encode=lambda value: value,
+        decode=lambda value: value,
+    )
+    vae.first_stage_model.vae_ratio = 16
+    vae.first_stage_model.tile_size = 256
+
+    original_encode = vae.encode
+    patched = nodes.patch_minimax_h3_video_vae(
+        vae, tile_size=192, workspace_mib=512
+    )
+
+    assert patched is vae
+    assert vae.first_stage_model.tile_size == 192
+    assert vae.encode is not original_encode
+    first_patched_encode = vae.encode
+    nodes.patch_minimax_h3_video_vae(
+        vae, tile_size=160, workspace_mib=768
+    )
+    assert vae.encode is first_patched_encode
+    assert vae.first_stage_model.tile_size == 160
+    with pytest.raises(ValueError, match="divisible"):
+        nodes.patch_minimax_h3_video_vae(
+            vae, tile_size=190, workspace_mib=512
+        )
+    nodes.unpatch_minimax_h3_video_vae(vae)
+    assert vae.encode is original_encode
+
+
+def test_video_vae_tile_size_rejects_other_vae_types():
+    with pytest.raises(TypeError, match="MiniMax H3 video VAE"):
+        nodes.patch_minimax_h3_video_vae(
+            SimpleNamespace(first_stage_model=object()),
+            tile_size=192,
+            workspace_mib=512,
+        )

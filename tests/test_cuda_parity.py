@@ -87,7 +87,7 @@ def test_one_block_native_streaming_parity():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @torch.inference_mode()
-def test_curve_adaln_fl2va_and_ref2va_layout_parity():
+def test_curve_adaln_t2va_fl2va_and_ref2va_layout_parity():
     torch.manual_seed(11)
     device = torch.device("cuda")
     model = _tiny_model(device, use_curves=True)
@@ -96,14 +96,36 @@ def test_curve_adaln_fl2va_and_ref2va_layout_parity():
     context = torch.randn((1, 3, 256), device=device, dtype=torch.bfloat16)
     timestep = torch.tensor([350.0], device=device)
     cond_video = torch.randn_like(video)
+    cond_video_last = torch.randn_like(video)
     cond_audio = torch.randn_like(audio)
     payloads = [
+        {
+            "text_token_tags": torch.tensor([1, 0, 2]),
+            "seed": 17,
+        },
         {
             "keyframes": [{"resolved_frame_index": 0}],
             "frame_count": 5,
             "cond_video_latents": [cond_video],
             "text_token_tags": torch.tensor([1, 0, 2]),
             "seed": 19,
+        },
+        {
+            "keyframes": [{"resolved_frame_index": 4}],
+            "frame_count": 5,
+            "cond_video_latents": [cond_video_last],
+            "text_token_tags": torch.tensor([1, 0, 2]),
+            "seed": 20,
+        },
+        {
+            "keyframes": [
+                {"resolved_frame_index": 0},
+                {"resolved_frame_index": 4},
+            ],
+            "frame_count": 5,
+            "cond_video_latents": [cond_video, cond_video_last],
+            "text_token_tags": torch.tensor([1, 0, 2]),
+            "seed": 21,
         },
         {
             "refs": [
