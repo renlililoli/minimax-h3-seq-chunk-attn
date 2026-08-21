@@ -7,10 +7,11 @@ Exact CPU-backed streaming attention for native ComfyUI MiniMax-H3 models.
 [![Weights](https://img.shields.io/badge/INT8%20DiT-NVFP4%20Text-7c3aed)](#models)
 [![Capacity](https://img.shields.io/badge/157K%20tokens-8%20GiB%20validated-16a34a)](#usage)
 
-This custom node lets MiniMax-H3 keep long-sequence hidden states and complete
-Q/K/V tensors in pinned CPU memory while using a bounded GPU working set. It
-uses exact dense attention and works with existing ComfyUI checkpoints without
-conversion.
+This package bounds both major MiniMax-H3 activation paths. The SeqAttn model
+patch keeps long-sequence hidden states and complete Q/K/V tensors in pinned
+CPU memory. The Qwen BF16 patch runs text and visual conditioning with bounded
+BF16 activations and layer-offloaded weights. Both work with existing ComfyUI
+checkpoints without conversion.
 
 Supported layouts: T2VA, FL2VA, and Ref2VA. A 157,196-token, 243-frame,
 1344x768 Ref2VA denoise step has been validated below an 8 GiB process target.
@@ -77,6 +78,30 @@ memory measurements, checksums, raw JSON, and measurement limitations are in
 the
 [development-branch technical report](https://github.com/renlililoli/minimax-h3-seq-chunk-attn/blob/feature/comfyui-minimax-h3-seqattn/docs/comfyui_minimax_h3_seqattn_8g_20step_20260820.md).
 
+## Qwen Conditioning
+
+Add **MiniMax H3 Qwen BF16 Offload** after the MiniMax `CLIPLoader` and before
+the MiniMax conditioning node. The bundled workflow already includes it.
+
+The node converts token, vision, and decoder activations to BF16, uses an
+in-place decoder MLP, reuses hidden-state storage between layers, and rejects
+oversized text/image/video presentations before the vision tower runs.
+
+| Setting | Default | Description |
+|---|---:|---|
+| `offload_mode` | `prefetch` | `prefetch` uses two asynchronous weight streams; `extreme` disables asynchronous prefetch for the lowest transient weight footprint |
+| `activation_limit_mib` | `5888` | Per-layer Qwen activation-plan limit |
+| `max_conditioning_rows` | `25000` | Hard limit for the complete Qwen presentation |
+| `preflight_safety_mib` | `128` | Reserve added to the calibrated preflight estimate |
+
+The default 1344x768, 243-frame Ref2VA presentation contains about 11.2K Qwen
+rows. On an RTX 5090, the default `prefetch` policy completed all 50 decoder
+layers in 13.45 seconds at a 6,208 MiB process peak. A 21.4K-row multi-reference
+probe completed in 19.60 seconds at 7,724 MiB under the same 8 GiB target.
+Preflight accounts for the quadratic causal mask and retained DeepStack
+features; the 25K-row value is an absolute input cap, not a guarantee that every
+25K-row composition fits in 8 GiB.
+
 ## Install
 
 ### ComfyUI Manager
@@ -102,9 +127,10 @@ No submodules or additional Python packages are required.
 - Batch size 1
 - Sufficient CPU DRAM for full hidden and Q/K/V storage
 
-The attention activation path uses BF16 regardless of checkpoint storage
-precision. LoRA, diffusion-model replacement patches, NVMe activation backing,
-and multi-GPU execution are not currently supported.
+The attention and Qwen activation paths use BF16 regardless of checkpoint
+storage precision. The Qwen node requires `CLIPLoader` device `default`. LoRA,
+diffusion-model replacement patches, NVMe activation backing, and multi-GPU
+execution are not currently supported.
 
 ## Models
 
@@ -126,9 +152,9 @@ Model weights are not included with this node.
 
 ## Usage
 
-Import [`workflows/minimax_h3_seqattn_ref2va.json`](workflows/minimax_h3_seqattn_ref2va.json)
-or add **MiniMax H3 SeqAttn** immediately after a native MiniMax-H3 diffusion
-model loader and connect its `MODEL` output to the sampler or guider.
+Import [`workflows/minimax_h3_seqattn_ref2va.json`](workflows/minimax_h3_seqattn_ref2va.json),
+or add **MiniMax H3 SeqAttn** immediately after the diffusion-model loader and
+**MiniMax H3 Qwen BF16 Offload** immediately after the MiniMax `CLIPLoader`.
 
 | Setting | Default | Description |
 |---|---:|---|

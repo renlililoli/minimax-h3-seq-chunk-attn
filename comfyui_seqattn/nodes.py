@@ -5,6 +5,7 @@ from comfy.ldm.minimax.model import MiniMaxH3Model
 from comfy_api.v0_0_2 import ComfyExtension, io
 
 from .minimax_h3 import streaming_minimax_h3_forward
+from .qwen import patch_minimax_h3_qwen_clip
 from .runtime import SeqAttnRuntime, SeqAttnSettings
 
 STATE_KEY = "minimax_h3_seqattn"
@@ -142,9 +143,76 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
         return io.NodeOutput(patched)
 
 
+class MiniMaxH3QwenBF16Offload(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MiniMaxH3QwenBF16Offload",
+            display_name="MiniMax H3 Qwen BF16 Offload",
+            description="Bounds native MiniMax-H3 Qwen conditioning memory with BF16 activations, input preflight, and selectable dual-stream or extreme offload.",
+            category="model/patch/minimax",
+            is_experimental=True,
+            inputs=[
+                io.Clip.Input("clip"),
+                io.Int.Input(
+                    "activation_limit_mib",
+                    default=5888,
+                    min=1024,
+                    max=65536,
+                    step=256,
+                    advanced=True,
+                ),
+                io.Int.Input(
+                    "max_conditioning_rows",
+                    default=25000,
+                    min=1024,
+                    max=100000,
+                    step=1024,
+                    advanced=True,
+                ),
+                io.Int.Input(
+                    "preflight_safety_mib",
+                    default=128,
+                    min=0,
+                    max=8192,
+                    step=128,
+                    advanced=True,
+                ),
+                io.Combo.Input(
+                    "offload_mode",
+                    options=["prefetch", "extreme"],
+                    default="prefetch",
+                ),
+                io.Boolean.Input("enabled", default=True),
+            ],
+            outputs=[io.Clip.Output()],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        clip,
+        activation_limit_mib: int,
+        max_conditioning_rows: int,
+        preflight_safety_mib: int,
+        offload_mode: str,
+        enabled: bool,
+    ) -> io.NodeOutput:
+        if not enabled:
+            return io.NodeOutput(clip)
+        patched = patch_minimax_h3_qwen_clip(
+            clip,
+            activation_limit_mib=activation_limit_mib,
+            max_conditioning_rows=max_conditioning_rows,
+            preflight_safety_mib=preflight_safety_mib,
+            offload_mode=offload_mode,
+        )
+        return io.NodeOutput(patched)
+
+
 class SeqAttnExtension(ComfyExtension):
     async def get_node_list(self):
-        return [MiniMaxH3SeqAttn]
+        return [MiniMaxH3SeqAttn, MiniMaxH3QwenBF16Offload]
 
 
 async def comfy_entrypoint():
@@ -153,6 +221,7 @@ async def comfy_entrypoint():
 
 __all__ = [
     "MiniMaxH3SeqAttn",
+    "MiniMaxH3QwenBF16Offload",
     "SeqAttnExtension",
     "comfy_entrypoint",
     "minimax_h3_seqattn_wrapper",
