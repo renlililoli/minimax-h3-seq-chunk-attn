@@ -81,3 +81,9 @@ def test_refined_conditioning_fallback_key_uses_tensor_content_and_metadata():
         )
         is None
     )
+    assert (
+        streaming._refined_conditioning_cache_key(
+            model, first, {"optimized_attention_override": object()}
+        )
+        is None
+    )

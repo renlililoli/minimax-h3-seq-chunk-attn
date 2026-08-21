@@ -7,7 +7,7 @@ from comfy_api.v0_0_2 import ComfyExtension, io
 from .minimax_h3 import streaming_minimax_h3_forward
 from .qwen import patch_minimax_h3_qwen_clip
 from .runtime import SeqAttnRuntime, SeqAttnSettings
-from .vae import patch_minimax_h3_video_vae, unpatch_minimax_h3_video_vae
+from .vae import patch_minimax_h3_video_vae
 
 STATE_KEY = "minimax_h3_seqattn"
 
@@ -251,7 +251,7 @@ class MiniMaxH3VAEStreaming(io.ComfyNode):
         enabled: bool,
     ) -> io.NodeOutput:
         if not enabled:
-            return io.NodeOutput(unpatch_minimax_h3_video_vae(vae))
+            return io.NodeOutput(vae)
         return io.NodeOutput(
             patch_minimax_h3_video_vae(
                 vae, tile_size=tile_size, workspace_mib=workspace_mib

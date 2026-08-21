@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import copy
+import types
+
 import torch
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
@@ -12,6 +16,7 @@ class MiniMaxH3VAEController:
         self.vae = vae
         self.original_encode = vae.encode
         self.original_decode = vae.decode
+        self.original_tile_size = self.model.tile_size
         self.configure(tile_size=tile_size, workspace_mib=workspace_mib)
 
     @property
@@ -30,7 +35,6 @@ class MiniMaxH3VAEController:
             raise ValueError("MiniMax H3 VAE workspace_mib must be at least 256")
         self.tile_size = tile_size
         self.workspace_mib = workspace_mib
-        self.model.tile_size = tile_size
 
     def install(self) -> None:
         self.vae.encode = self.encode
@@ -40,8 +44,18 @@ class MiniMaxH3VAEController:
     def restore(self) -> None:
         self.vae.encode = self.original_encode
         self.vae.decode = self.original_decode
+        self.model.tile_size = self.original_tile_size
         if getattr(self.vae, STATE_KEY, None) is self:
             delattr(self.vae, STATE_KEY)
+
+    @contextlib.contextmanager
+    def _configured_tile_size(self):
+        original_tile_size = self.model.tile_size
+        self.model.tile_size = self.tile_size
+        try:
+            yield
+        finally:
+            self.model.tile_size = original_tile_size
 
     def _load(self) -> None:
         import comfy.model_management as model_management
@@ -62,7 +76,9 @@ class MiniMaxH3VAEController:
         x = self.vae.process_input(pixels).to(self.vae.vae_dtype)
         self._load()
 
-        with model_management.cuda_device_context(self.vae.device):
+        with self._configured_tile_size(), model_management.cuda_device_context(
+            self.vae.device
+        ):
             if x.shape[2] == 1:
                 encoded = self.model.encode(x.to(self.vae.device))
                 return encoded.to(
@@ -107,15 +123,18 @@ class MiniMaxH3VAEController:
         if latent.ndim != 5 or latent.shape[0] != 1:
             raise ValueError("MiniMax H3 streamed VAE decode requires batch size 1")
         self._load()
-        latent_mean = self.model.latents_mean.view(1, -1, 1, 1, 1).to(latent)
-        latent_std = self.model.latents_std.view(1, -1, 1, 1, 1).to(latent)
-        z = latent * latent_std + latent_mean
-        if z.shape[2] == 1:
-            with model_management.cuda_device_context(self.vae.device):
-                decoded = self.model.decode(z.to(self.vae.device))
+        if latent.shape[2] == 1:
+            with self._configured_tile_size(), model_management.cuda_device_context(
+                self.vae.device
+            ):
+                decoded = self.model.decode(latent.to(self.vae.device))
             return self.vae.process_output(decoded).to(
                 self.vae.output_device, copy=True
             ).movedim(1, -1)
+
+        latent_mean = self.model.latents_mean.view(1, -1, 1, 1, 1).to(latent)
+        latent_std = self.model.latents_std.view(1, -1, 1, 1, 1).to(latent)
+        z = latent * latent_std + latent_mean
 
         chunk_dec = self.model.tokens_chunk_size * self.model.vae_ratio_t
         split_count = int(self.model.token_drop > 0) + 1
@@ -161,7 +180,9 @@ class MiniMaxH3VAEController:
             )
             write_pos += frame_count
 
-        with model_management.cuda_device_context(self.vae.device):
+        with self._configured_tile_size(), model_management.cuda_device_context(
+            self.vae.device
+        ):
             for index in range(num_chunks):
                 start = index * self.model.tokens_chunk_size
                 stop = start + self.model.tokens_chunk_size + self.model.token_overlap
@@ -196,9 +217,34 @@ class MiniMaxH3VAEController:
         return output.movedim(1, -1)
 
 
-def patch_minimax_h3_video_vae(
-    vae, *, tile_size: int, workspace_mib: int
-):
+def _rebind_wrapper_method(method, source, target):
+    if isinstance(method, types.MethodType) and method.__self__ is source:
+        return types.MethodType(method.__func__, target)
+    return method
+
+
+def _clone_vae_wrapper(vae):
+    controller = getattr(vae, STATE_KEY, None)
+    if isinstance(controller, MiniMaxH3VAEController):
+        encode = controller.original_encode
+        decode = controller.original_decode
+    else:
+        encode = vae.encode
+        decode = vae.decode
+
+    cloned = copy.copy(vae)
+    patcher = getattr(vae, "patcher", None)
+    if patcher is not None:
+        cloned.patcher = patcher.clone()
+        cloned.first_stage_model = cloned.patcher.model
+    cloned.encode = _rebind_wrapper_method(encode, vae, cloned)
+    cloned.decode = _rebind_wrapper_method(decode, vae, cloned)
+    if hasattr(cloned, STATE_KEY):
+        delattr(cloned, STATE_KEY)
+    return cloned
+
+
+def patch_minimax_h3_video_vae(vae, *, tile_size: int, workspace_mib: int):
     model = getattr(vae, "first_stage_model", None)
     if not isinstance(model, MiniMaxH3VideoVAE):
         actual = type(model).__name__ if model is not None else "None"
@@ -206,15 +252,12 @@ def patch_minimax_h3_video_vae(
             "MiniMaxH3VAEStreaming requires the native MiniMax H3 video VAE; "
             f"received {actual}"
         )
-    controller = getattr(vae, STATE_KEY, None)
-    if isinstance(controller, MiniMaxH3VAEController):
-        controller.configure(tile_size=tile_size, workspace_mib=workspace_mib)
-    else:
-        controller = MiniMaxH3VAEController(
-            vae, tile_size=tile_size, workspace_mib=workspace_mib
-        )
-        controller.install()
-    return vae
+    patched = _clone_vae_wrapper(vae)
+    controller = MiniMaxH3VAEController(
+        patched, tile_size=tile_size, workspace_mib=workspace_mib
+    )
+    controller.install()
+    return patched
 
 
 def unpatch_minimax_h3_video_vae(vae):

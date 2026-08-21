@@ -159,8 +159,10 @@ def _refined_conditioning_cache_key(
     text_states: torch.Tensor,
     transformer_options: dict,
 ) -> tuple | None:
-    if transformer_options.get("patches") or transformer_options.get(
-        "patches_replace"
+    if (
+        transformer_options.get("patches")
+        or transformer_options.get("patches_replace")
+        or "optimized_attention_override" in transformer_options
     ):
         return None
 
