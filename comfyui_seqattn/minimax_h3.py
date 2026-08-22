@@ -237,6 +237,9 @@ def _embed_packed_hidden(
         all_audio_rows[audio_update] = audio_rows
 
     text_states = context[0]
+    runtime.record_refined_conditioning_forward(
+        text_states.shape[-1] != model.hidden_size
+    )
     refined_cache_key = None
     publish_refined_cache = False
     if text_states.shape[-1] != model.hidden_size:

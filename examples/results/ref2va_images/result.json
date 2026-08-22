@@ -1,0 +1,238 @@
+{
+  "conditioning": {
+    "device": "cpu",
+    "dtype": "torch.bfloat16",
+    "shape": [
+      1,
+      2098,
+      5120
+    ]
+  },
+  "configuration": {
+    "audio_device": "cpu",
+    "frames": 124,
+    "height": 768,
+    "prompt": "Use <Picture 1> and <Picture 2> as identity, wardrobe, palette, and environment references. The same woman walks through the pink enchanted garden, pauses beside a crystal flower, then turns toward the camera. One coherent five-second shot, stable identity, natural motion, no cuts, no text, no logos.",
+    "seed": 0,
+    "steps": 2,
+    "target_vram_mib": 8192,
+    "width": 1344
+  },
+  "denoise": {
+    "steps": 2,
+    "torch_peak_allocated_mib": 3876.4755859375,
+    "torch_peak_reserved_mib": 4286.0
+  },
+  "diffusion_model": {
+    "hidden_size": 5376,
+    "input_conditioning_width": 5120,
+    "upstream_refiner_required": true
+  },
+  "environment": {
+    "comfyui_commit": "unknown",
+    "comfyui_dir": "/opt/ComfyUI",
+    "cuda": "12.8",
+    "cuda_visible_devices": null,
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "hostname": "07ee712a7411",
+    "package_commit": "unknown",
+    "package_root": "/workspace",
+    "python": "3.12.3",
+    "torch": "2.10.0+cu128"
+  },
+  "finished_at_utc": "2026-08-22T02:21:33.324179+00:00",
+  "inputs": {
+    "ref_images": [
+      "/workspace/assets/benchmark/fl2va_first_frame_1344x768.png",
+      "/workspace/assets/benchmark/fl2va_last_frame_1344x768.png"
+    ]
+  },
+  "memory": {
+    "cpu_rss_peak_mib": 51630.97265625,
+    "nvml_process_peak_mib": 7392.0,
+    "sample_count": 4820,
+    "sample_interval_ms": 50.0,
+    "trace_path": "/results/ref2va_images/memory_trace.csv.gz"
+  },
+  "memory_budget": {
+    "allocator_fraction": 0.2275860055471753,
+    "allocator_limit_mib": 7308.0,
+    "context_mib": 500.0,
+    "physical_mib": 32110.9375,
+    "safety_mib": 384,
+    "target_mib": 8192
+  },
+  "output": {
+    "audio_sample_rate": 32000,
+    "fps": 24,
+    "path": "/results/ref2va_images/output.mp4",
+    "probe": {
+      "audio": {
+        "channels": 2,
+        "codec": "aac",
+        "sample_rate": 32000
+      },
+      "duration_seconds": 5.167,
+      "video": {
+        "codec": "h264",
+        "container_frames": 124,
+        "decoded_frames": 124,
+        "fps": 24.0,
+        "height": 768,
+        "width": 1344
+      }
+    },
+    "size_bytes": 4744044,
+    "video_shape": [
+      124,
+      768,
+      1344,
+      3
+    ]
+  },
+  "packed_sequence": {
+    "latent_shapes": [
+      [
+        1,
+        24,
+        37,
+        48,
+        84
+      ],
+      [
+        1,
+        32,
+        2,
+        207
+      ]
+    ],
+    "segments": [
+      {
+        "kind": "text",
+        "start": 0,
+        "stop": 2098
+      },
+      {
+        "kind": "ref_img",
+        "start": 2098,
+        "stop": 3106
+      },
+      {
+        "kind": "ref_img",
+        "start": 3106,
+        "stop": 4114
+      },
+      {
+        "kind": "audio",
+        "start": 4114,
+        "stop": 4528
+      },
+      {
+        "kind": "video",
+        "start": 4528,
+        "stop": 41824
+      }
+    ],
+    "tokens": 41824
+  },
+  "phases": [
+    {
+      "cpu_rss_peak_mib": 10286.7421875,
+      "name": "video_vae_load",
+      "nvml_process_peak_mib": 500.0,
+      "sample_count": 52,
+      "seconds": 3.0272701838985085
+    },
+    {
+      "cpu_rss_peak_mib": 8525.29296875,
+      "name": "qwen_load",
+      "nvml_process_peak_mib": 500.0,
+      "sample_count": 9,
+      "seconds": 0.9071972980163991
+    },
+    {
+      "cpu_rss_peak_mib": 23618.66796875,
+      "name": "conditioning",
+      "nvml_process_peak_mib": 6612.0,
+      "sample_count": 618,
+      "seconds": 32.06244024191983
+    },
+    {
+      "cpu_rss_peak_mib": 24546.18359375,
+      "name": "diffusion_model_load",
+      "nvml_process_peak_mib": 1564.0,
+      "sample_count": 4,
+      "seconds": 0.2284510750323534
+    },
+    {
+      "cpu_rss_peak_mib": 48597.9453125,
+      "name": "denoise",
+      "nvml_process_peak_mib": 4984.0,
+      "sample_count": 3042,
+      "seconds": 158.3708835679572
+    },
+    {
+      "cpu_rss_peak_mib": 48600.93359375,
+      "name": "video_decode",
+      "nvml_process_peak_mib": 7392.0,
+      "sample_count": 373,
+      "seconds": 19.141838633920997
+    },
+    {
+      "cpu_rss_peak_mib": 51630.97265625,
+      "name": "audio_vae_load",
+      "nvml_process_peak_mib": 1726.0,
+      "sample_count": 5,
+      "seconds": 0.2990166668314487
+    },
+    {
+      "cpu_rss_peak_mib": 51241.15625,
+      "name": "audio_decode",
+      "nvml_process_peak_mib": 1726.0,
+      "sample_count": 136,
+      "seconds": 6.937279336154461
+    },
+    {
+      "cpu_rss_peak_mib": 51206.890625,
+      "name": "media_write",
+      "nvml_process_peak_mib": 1726.0,
+      "sample_count": 206,
+      "seconds": 11.921324016992003
+    },
+    {
+      "cpu_rss_peak_mib": 51209.9609375,
+      "name": "media_probe",
+      "nvml_process_peak_mib": 1726.0,
+      "sample_count": 11,
+      "seconds": 0.5351409779395908
+    }
+  ],
+  "qwen_preflight": {
+    "embedding_rows": 0,
+    "estimated_activation_mib": 1722.53466796875,
+    "estimated_with_safety_mib": 1850.53466796875,
+    "image_rows": 2016,
+    "non_visual_rows": 82,
+    "total_rows": 2098,
+    "video_rows": 0,
+    "visual_rows": 2016
+  },
+  "refined_conditioning_cache": {
+    "applicable_calls": 0,
+    "bypasses": 0,
+    "forward_calls": 2,
+    "hits": 0,
+    "misses": 0,
+    "passthrough_calls": 2,
+    "peak_host_bytes": 0,
+    "stores": 0
+  },
+  "scenario": "ref2va_images",
+  "started_at_utc": "2026-08-22T02:17:20.128135+00:00",
+  "status": "success",
+  "upstream_refiner": {
+    "condition_proj": 1,
+    "expected_calls_per_sampling_job": 1,
+    "token_refiner": 1
+  }
+}

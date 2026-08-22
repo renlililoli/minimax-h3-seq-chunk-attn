@@ -7,6 +7,8 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPOSITORY_ROOT / "workflows"
 FL2VA_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+REF2VA_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+REF2VA_WORKFLOW = "minimax_h3_seqattn_ref2va.json"
 
 WORKFLOW_KEYFRAME_LINKS = {
     "minimax_h3_seqattn_t2va.json": (None, None),
@@ -64,7 +66,7 @@ def test_fl2va_workflows_are_standalone_and_use_safe_defaults():
 
 
 def test_fl2va_workflow_links_match_node_slots():
-    for filename in WORKFLOW_KEYFRAME_LINKS:
+    for filename in (*WORKFLOW_KEYFRAME_LINKS, REF2VA_WORKFLOW):
         workflow = json.loads((WORKFLOW_DIR / filename).read_text())
         nodes = {node["id"]: node for node in workflow["nodes"]}
         links = {link[0]: link for link in workflow["links"]}
@@ -80,3 +82,38 @@ def test_fl2va_workflow_links_match_node_slots():
             for source_slot, output in enumerate(node.get("outputs", [])):
                 for link_id in output.get("links") or []:
                     assert links[link_id][1:3] == [node["id"], source_slot]
+
+
+def test_ref2va_workflow_uses_streaming_vae_and_matching_references():
+    workflow = json.loads((WORKFLOW_DIR / REF2VA_WORKFLOW).read_text())
+    nodes = _nodes_by_type(workflow)
+
+    assert nodes["UNETLoader"]["widgets_values"][0] == REF2VA_MODEL
+    assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == [
+        192,
+        512,
+        True,
+    ]
+
+    conditioning = nodes["MiniMaxH3ReferenceToVideoSeqAttn"]
+    inputs = {item["name"]: item.get("link") for item in conditioning["inputs"]}
+    assert inputs["vae"] == 287
+    assert inputs["ref_images.ref_image_0"] == 278
+    assert inputs["ref_images.ref_image_1"] == 282
+    assert inputs["ref_videos.ref_video_0"] is None
+    assert inputs["ref_video_audios.ref_video_audio_0"] is None
+    assert inputs["ref_audios.ref_audio_0"] is None
+
+    assert nodes["VAEDecode"]["inputs"][1]["link"] == 286
+    video_vae_loader = next(
+        node
+        for node in workflow["nodes"]
+        if node["type"] == "VAELoader"
+        and node["widgets_values"][0] == "minimax_h3_video_vae_fp16.safetensors"
+    )
+    assert video_vae_loader["outputs"][0]["links"] == [285]
+
+    prompt = nodes["PrimitiveStringMultiline"]["widgets_values"][0]
+    assert "<Picture 1>" in prompt
+    assert "<Picture 2>" in prompt
+    assert "<Audio 1>" not in prompt

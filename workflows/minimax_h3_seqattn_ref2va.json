@@ -151,8 +151,7 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            251,
-            273
+            285
           ]
         }
       ],
@@ -276,7 +275,7 @@
         {
           "name": "vae",
           "type": "VAE",
-          "link": 251
+          "link": 286
         }
       ],
       "outputs": [
@@ -755,7 +754,7 @@
     },
     {
       "id": 136,
-      "type": "MiniMaxH3ReferenceToVideo",
+      "type": "MiniMaxH3ReferenceToVideoSeqAttn",
       "pos": [
         -750,
         4940
@@ -776,7 +775,7 @@
         {
           "name": "vae",
           "type": "VAE",
-          "link": 273
+          "link": 287
         },
         {
           "name": "audio_vae",
@@ -875,7 +874,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "MiniMaxH3ReferenceToVideo"
+        "Node name for S&R": "MiniMaxH3ReferenceToVideoSeqAttn"
       },
       "widgets_values": [
         "",
@@ -951,7 +950,7 @@
         "Node name for S&R": "PrimitiveStringMultiline"
       },
       "widgets_values": [
-        "Bold comic-book ink style, heavy linework, red and blue-black palette, night city. Use <Picture 2> and <Picture 1> as reference frames and <Audio 1> exactly as it is.\nCUT 1: top-down view of the little boy superhero on the rooftop \u2014 red cape fluttering in the wind, hands planted on his hips, freckles and a cocky grin as he looks straight up into the camera. The camera slowly descends toward him as he delivers his line \u2014 as he speaks, comic-book graphic overlay text word by word in sync with his voice: \"GET READY TO\" - \"MEET\" \u2014 \"YOUR\" \u2014 \"MAKER\" \u2014 huge jagged comic lettering, white with heavy black outlines and red drop shadows, tilted at scrappy angles, until the three words hang stacked in the air above him between his face and the lens.\nTRANSITION: a violent WHIP PAN off the rooftop that SMEARS the floating words away with it, motion-streaked \u2014\nCUT 2: low hero angle on the colossal black mech-kaiju towering over the skyline as it rears back and unleashes a GIANT terrifying ROAR \u2014 jaws wide with fangs, red eyes and chest-core flaring blinding bright, blue lightning arcing off its head, the roar's shockwave rippling dust and rattling windows down the buildings, comic-style speed-lines and ink splatter bursting from the impact of the sound. It leans INTO the camera as the roar peaks. Hold on the roar."
+        "Bold comic-book ink style, heavy linework, red and blue-black palette, night city. Use <Picture 2> and <Picture 1> as reference frames.\nCUT 1: top-down view of the little boy superhero on the rooftop \u2014 red cape fluttering in the wind, hands planted on his hips, freckles and a cocky grin as he looks straight up into the camera. The camera slowly descends toward him as he delivers his line \u2014 as he speaks, comic-book graphic overlay text word by word in sync with his voice: \"GET READY TO\" - \"MEET\" \u2014 \"YOUR\" \u2014 \"MAKER\" \u2014 huge jagged comic lettering, white with heavy black outlines and red drop shadows, tilted at scrappy angles, until the three words hang stacked in the air above him between his face and the lens.\nTRANSITION: a violent WHIP PAN off the rooftop that SMEARS the floating words away with it, motion-streaked \u2014\nCUT 2: low hero angle on the colossal black mech-kaiju towering over the skyline as it rears back and unleashes a GIANT terrifying ROAR \u2014 jaws wide with fangs, red eyes and chest-core flaring blinding bright, blue lightning arcing off its head, the roar's shockwave rippling dust and rattling windows down the buildings, comic-style speed-lines and ink splatter bursting from the impact of the sound. It leans INTO the camera as the roar peaks. Hold on the roar."
       ],
       "color": "#322",
       "bgcolor": "#533"
@@ -1057,6 +1056,46 @@
         "fit",
         true
       ]
+    },
+    {
+      "id": 143,
+      "type": "MiniMaxH3VAEStreaming",
+      "pos": [
+        -750,
+        5480
+      ],
+      "size": [
+        360,
+        82
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 285
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            286,
+            287
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3VAEStreaming"
+      },
+      "widgets_values": [
+        192,
+        512,
+        true
+      ]
     }
   ],
   "links": [
@@ -1065,14 +1104,6 @@
       120,
       0,
       121,
-      1,
-      "VAE"
-    ],
-    [
-      251,
-      119,
-      0,
-      122,
       1,
       "VAE"
     ],
@@ -1181,14 +1212,6 @@
       "CLIP"
     ],
     [
-      273,
-      119,
-      0,
-      136,
-      1,
-      "VAE"
-    ],
-    [
       274,
       120,
       0,
@@ -1275,6 +1298,30 @@
       142,
       0,
       "CLIP"
+    ],
+    [
+      285,
+      119,
+      0,
+      143,
+      0,
+      "VAE"
+    ],
+    [
+      286,
+      143,
+      0,
+      122,
+      1,
+      "VAE"
+    ],
+    [
+      287,
+      143,
+      0,
+      136,
+      1,
+      "VAE"
     ]
   ],
   "groups": [
@@ -1309,7 +1356,7 @@
         -790,
         4840,
         480,
-        670
+        730
       ],
       "color": "#3f789e",
       "flags": {}
@@ -1331,9 +1378,9 @@
       "title": "User Inputs",
       "bounding": [
         -1520,
-        5540,
+        5580,
         1930,
-        900
+        860
       ],
       "color": "#3f789e",
       "flags": {}

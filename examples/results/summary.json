@@ -1,0 +1,61 @@
+{
+  "environment": {
+    "cuda": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "python": "3.12.3",
+    "pytorch": "2.10.0+cu128",
+    "target_vram_mib": 8192
+  },
+  "scenarios": {
+    "fl2va": {
+      "cpu_rss_peak_gib": 47.35,
+      "denoise_seconds": 141.388,
+      "frames": 56,
+      "gpu_peak_mib": 7326.0,
+      "output": "fl2va/output.mp4",
+      "packed_tokens": 21422,
+      "resolution": "1344x768",
+      "result": "fl2va/result.json",
+      "status": "success",
+      "wall_seconds": 208.115
+    },
+    "ref2va_images": {
+      "cpu_rss_peak_gib": 50.42,
+      "denoise_seconds": 158.371,
+      "frames": 124,
+      "gpu_peak_mib": 7392.0,
+      "output": "ref2va_images/output.mp4",
+      "packed_tokens": 41824,
+      "resolution": "1344x768",
+      "result": "ref2va_images/result.json",
+      "status": "success",
+      "wall_seconds": 253.196
+    },
+    "ref2va_video": {
+      "cpu_rss_peak_gib": 55.85,
+      "denoise_seconds": 272.41,
+      "frames": 124,
+      "gpu_peak_mib": 7756.0,
+      "output": "ref2va_video/output.mp4",
+      "packed_tokens": 81180,
+      "resolution": "1344x768",
+      "result": "ref2va_video/result.json",
+      "status": "success",
+      "wall_seconds": 398.962
+    },
+    "t2va": {
+      "cpu_rss_peak_gib": 45.68,
+      "denoise_seconds": 101.296,
+      "frames": 56,
+      "gpu_peak_mib": 7344.0,
+      "output": "t2va/output.mp4",
+      "packed_tokens": 17375,
+      "resolution": "1344x768",
+      "result": "t2va/result.json",
+      "status": "success",
+      "wall_seconds": 165.979
+    }
+  },
+  "steps": 2,
+  "validated_at_utc": "2026-08-22"
+}

@@ -273,6 +273,11 @@ Model weights are not included with this node.
 
 ## Usage
 
+For command-line, two-step end-to-end checks after a fresh installation, see
+the bundled [`examples/`](examples/README.md) directory. It includes one-click
+T2VA, FL2VA, image-reference Ref2VA, and video-reference Ref2VA scripts plus
+the recorded outputs, memory traces, and validation metadata.
+
 Import the workflow matching the generation mode:
 
 | Mode | Workflow | Inputs |
@@ -291,6 +296,12 @@ the MiniMax `CLIPLoader`. For bounded keyframe encoding and video decoding,
 pass the video VAE through **MiniMax H3 VAE Streaming**; the bundled workflows
 use a validated 192-pixel tile and 512 MiB activation workspace. This also
 streams long VAE inputs and decoded frames through CPU memory.
+
+The bundled Ref2VA workflow uses **MiniMax H3 Reference to Video (SeqAttn)**.
+It preserves the native reference ordering and payload, but completes Qwen
+preflight and text/visual encoding before any reference image, video, or audio
+VAE encode. Oversized multimodal prompts therefore fail before expensive VAE
+work begins.
 
 All four FL2VA checkpoint modes were validated at 1344x768 with 56 output
 frames under an 8 GiB process target on an RTX 5090:

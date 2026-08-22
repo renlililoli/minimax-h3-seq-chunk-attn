@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import comfy.patcher_extension
 import pytest
 import torch
+from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
 from comfy.ldm.minimax.model import MiniMaxH3Model
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
@@ -187,7 +188,12 @@ def test_video_vae_single_frame_decode_matches_native_and_restores_tile(
         vae, tile_size=192, workspace_mib=512
     )
     controller = getattr(patched, vae_mod.STATE_KEY)
-    monkeypatch.setattr(controller, "_load", lambda: None)
+    load_inference_modes = []
+    monkeypatch.setattr(
+        controller,
+        "_load",
+        lambda: load_inference_modes.append(torch.is_inference_mode_enabled()),
+    )
 
     import comfy.model_management as model_management
 
@@ -208,6 +214,7 @@ def test_video_vae_single_frame_decode_matches_native_and_restores_tile(
     torch.testing.assert_close(actual, expected)
     assert captured["tile_size"] == 192
     assert model.tile_size == 256
+    assert load_inference_modes == [False]
 
 
 def test_video_vae_patched_branches_are_isolated():
@@ -244,3 +251,130 @@ def test_video_vae_tile_size_rejects_other_vae_types():
             tile_size=192,
             workspace_mib=512,
         )
+
+
+def test_ref2va_seqattn_schema_preserves_native_input_contract():
+    native = MiniMaxH3ReferenceToVideo.define_schema()
+    seqattn = nodes.MiniMaxH3ReferenceToVideoSeqAttn.define_schema()
+
+    assert seqattn.node_id == "MiniMaxH3ReferenceToVideoSeqAttn"
+    assert [item.id for item in seqattn.inputs] == [
+        item.id for item in native.inputs
+    ]
+    assert [item.id for item in seqattn.outputs] == [
+        item.id for item in native.outputs
+    ]
+
+
+def test_ref2va_qwen_rejection_happens_before_any_vae_encode(monkeypatch):
+    events = []
+
+    class RejectingClip:
+        def tokenize(self, prompt, *, minimax_ref_items):
+            events.append(("tokenize", prompt, len(minimax_ref_items)))
+            return "tokens"
+
+        def encode_from_tokens_scheduled(self, tokens):
+            events.append(("qwen", tokens))
+            raise RuntimeError("Qwen input rejected before encode")
+
+    class RecordingVAE:
+        def encode(self, _value):
+            events.append(("vae",))
+            raise AssertionError("VAE encode must not run after Qwen rejection")
+
+    monkeypatch.setattr(nodes, "_empty_av_latent", lambda *_args: ("latent", 5))
+    monkeypatch.setattr(nodes, "_resize", lambda value, *_args: value)
+    image = torch.zeros((1, 32, 32, 3))
+
+    with pytest.raises(RuntimeError, match="Qwen input rejected before encode"):
+        nodes.MiniMaxH3ReferenceToVideoSeqAttn.execute(
+            RejectingClip(),
+            RecordingVAE(),
+            RecordingVAE(),
+            "prompt",
+            32,
+            32,
+            5,
+            ref_images={"ref_image_0": image},
+        )
+
+    assert events == [("tokenize", "prompt", 1), ("qwen", "tokens")]
+
+
+def test_ref2va_seqattn_preserves_reference_order_and_payload(monkeypatch):
+    events = []
+    captured = {}
+
+    class RecordingClip:
+        def tokenize(self, _prompt, *, minimax_ref_items):
+            captured["ref_item_types"] = [
+                item["type"] for item in minimax_ref_items
+            ]
+            events.append("tokenize")
+            return "tokens"
+
+        def encode_from_tokens_scheduled(self, _tokens):
+            events.append("qwen")
+            return "conditioning"
+
+    class RecordingVideoVAE:
+        def encode(self, value):
+            kind = "image" if value.shape[0] == 1 else "video"
+            events.append(f"video_vae:{kind}")
+            latent_t = 1 if kind == "image" else 2
+            return torch.zeros((1, 24, latent_t, 2, 2))
+
+    class RecordingAudioVAE:
+        audio_sample_rate = 32000
+
+        def encode(self, _value):
+            events.append("audio_vae")
+            return torch.zeros((1, 32, 2, 3))
+
+    def set_values(conditioning, values):
+        captured["conditioning"] = conditioning
+        captured["refs"] = values["minimax_refs"]
+        return "conditioned"
+
+    monkeypatch.setattr(nodes, "_empty_av_latent", lambda *_args: ("latent", 5))
+    monkeypatch.setattr(nodes, "_resize", lambda value, *_args: value)
+    monkeypatch.setattr(nodes, "adapt_canvas", lambda width, height: (width, height))
+    monkeypatch.setattr(nodes.node_helpers, "conditioning_set_values", set_values)
+
+    image = torch.zeros((1, 32, 32, 3))
+    video = torch.zeros((5, 32, 32, 3))
+    audio = {
+        "waveform": torch.zeros((1, 2, 16)),
+        "sample_rate": 32000,
+    }
+    output = nodes.MiniMaxH3ReferenceToVideoSeqAttn.execute(
+        RecordingClip(),
+        RecordingVideoVAE(),
+        RecordingAudioVAE(),
+        "prompt",
+        32,
+        32,
+        5,
+        ref_images={"ref_image_0": image},
+        ref_videos={"ref_video_0": video},
+        ref_video_audios={"ref_video_audio_0": audio},
+        ref_audios={"ref_audio_0": audio},
+    )
+
+    assert output.result == ("conditioned", "latent")
+    assert events == [
+        "tokenize",
+        "qwen",
+        "video_vae:image",
+        "video_vae:video",
+        "audio_vae",
+        "audio_vae",
+    ]
+    assert captured["ref_item_types"] == ["image", "audio", "video", "audio"]
+    assert captured["conditioning"] == "conditioning"
+    assert [block["kind"] for block in captured["refs"]] == [
+        "image",
+        "video_audio",
+        "audio",
+    ]

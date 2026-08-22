@@ -29,4 +29,5 @@ def test_repository_root_is_a_comfyui_v3_extension():
         "MiniMaxH3SeqAttn",
         "MiniMaxH3QwenBF16Offload",
         "MiniMaxH3VAEStreaming",
+        "MiniMaxH3ReferenceToVideoSeqAttn",
     ]

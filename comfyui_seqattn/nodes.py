@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+import math
+
 import comfy.patcher_extension
+import node_helpers
+from comfy_extras.nodes_minimax_h3 import (
+    CANVAS_MULTIPLE,
+    FPS,
+    REF_IMAGE_SHORT_EDGE,
+    MiniMaxH3ReferenceToVideo as NativeMiniMaxH3ReferenceToVideo,
+    _empty_av_latent,
+    _resize,
+    adapt_canvas,
+)
 from comfy.ldm.minimax.model import MiniMaxH3Model
 from comfy_api.v0_0_2 import ComfyExtension, io
 
@@ -259,12 +271,183 @@ class MiniMaxH3VAEStreaming(io.ComfyNode):
         )
 
 
+class MiniMaxH3ReferenceToVideoSeqAttn(NativeMiniMaxH3ReferenceToVideo):
+    """Native Ref2VA conditioning with Qwen encode before reference VAE work."""
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        schema = super().define_schema()
+        schema.node_id = "MiniMaxH3ReferenceToVideoSeqAttn"
+        schema.display_name = "MiniMax H3 Reference to Video (SeqAttn)"
+        schema.description = (
+            "Reference-to-video conditioning that validates and encodes the Qwen "
+            "presentation before running reference image, video, or audio VAEs."
+        )
+        schema.is_experimental = True
+        return schema
+
+    @classmethod
+    def execute(
+        cls,
+        clip,
+        vae,
+        audio_vae,
+        prompt,
+        width,
+        height,
+        length,
+        ref_image_size="match",
+        ref_images=None,
+        ref_videos=None,
+        ref_video_audios=None,
+        ref_audios=None,
+    ) -> io.NodeOutput:
+        latent, frame_count = _empty_av_latent(width, height, length)
+        ref_items = []
+        prepared_images = []
+        prepared_videos = []
+        prepared_audios = []
+
+        for image in (ref_images or {}).values():
+            if image is None:
+                continue
+            image_height, image_width = image.shape[1], image.shape[2]
+            if ref_image_size == "match":
+                scale = min(
+                    1.0,
+                    math.sqrt(
+                        (width * height) / (image_width * image_height)
+                    ),
+                )
+            else:
+                scale = min(
+                    1.0,
+                    REF_IMAGE_SHORT_EDGE / min(image_width, image_height),
+                )
+            target_width = max(
+                CANVAS_MULTIPLE,
+                round(image_width * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE,
+            )
+            target_height = max(
+                CANVAS_MULTIPLE,
+                round(image_height * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE,
+            )
+            resized = _resize(
+                image[:1], target_width, target_height, "disabled"
+            )
+            prepared_images.append((resized, target_height, target_width))
+            ref_items.append({"type": "image", "data": resized})
+
+        video_audios = ref_video_audios or {}
+        for name, video_frames in (ref_videos or {}).items():
+            if video_frames is None:
+                continue
+            suffix = name.rsplit("_", 1)[-1]
+            soundtrack = video_audios.get(f"ref_video_audio_{suffix}")
+            video_height, video_width = video_frames.shape[1:3]
+            canvas_width, canvas_height = adapt_canvas(video_width, video_height)
+            if video_width * video_height < canvas_width * canvas_height:
+                canvas_width = max(
+                    CANVAS_MULTIPLE,
+                    round(video_width / CANVAS_MULTIPLE) * CANVAS_MULTIPLE,
+                )
+                canvas_height = max(
+                    CANVAS_MULTIPLE,
+                    round(video_height / CANVAS_MULTIPLE) * CANVAS_MULTIPLE,
+                )
+            frames = _resize(
+                video_frames, canvas_width, canvas_height, "disabled"
+            )
+            frames = frames[:frame_count]
+            aligned_frames = int(frames.shape[0])
+            if aligned_frames < 5:
+                raise ValueError(
+                    "MiniMax H3 reference videos need at least 5 frames "
+                    "(~0.2s at 24 fps)"
+                )
+            while aligned_frames % 17 != 5:
+                aligned_frames -= 1
+            frames = frames[:aligned_frames]
+            prepared_videos.append(
+                (frames, canvas_height, canvas_width, soundtrack)
+            )
+            if soundtrack is not None:
+                ref_items.append({"type": "audio"})
+            sample_indices = list(range(0, frames.shape[0], FPS // 2))
+            ref_items.append(
+                {
+                    "type": "video",
+                    "data": frames[sample_indices],
+                    "timestamps": [
+                        index / 2.0 for index in range(len(sample_indices))
+                    ],
+                }
+            )
+
+        for audio in (ref_audios or {}).values():
+            if audio is None:
+                continue
+            prepared_audios.append(audio)
+            ref_items.append({"type": "audio"})
+
+        tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
+        cond = clip.encode_from_tokens_scheduled(tokens)
+
+        ref_blocks = []
+        for resized, target_height, target_width in prepared_images:
+            encoded = vae.encode(resized)
+            ref_blocks.append(
+                {
+                    "kind": "image",
+                    "latent_h": target_height // 16,
+                    "latent_w": target_width // 16,
+                    "latent": encoded,
+                }
+            )
+
+        for frames, canvas_height, canvas_width, soundtrack in prepared_videos:
+            encoded = vae.encode(frames)
+            audio_latent, ref_audio_t = None, 0
+            if soundtrack is not None:
+                audio_latent, ref_audio_t = cls._encode_ref_audio(
+                    audio_vae, soundtrack
+                )
+            ref_blocks.append(
+                {
+                    "kind": "video_audio" if ref_audio_t else "video",
+                    "latent_t": encoded.shape[2],
+                    "latent_h": canvas_height // 16,
+                    "latent_w": canvas_width // 16,
+                    "ref_audio_t": ref_audio_t,
+                    "latent": encoded,
+                    "audio_latent": audio_latent,
+                }
+            )
+
+        for audio in prepared_audios:
+            audio_latent, ref_audio_t = cls._encode_ref_audio(audio_vae, audio)
+            ref_blocks.append(
+                {
+                    "kind": "audio",
+                    "ref_audio_t": ref_audio_t,
+                    "audio_latent": audio_latent,
+                }
+            )
+
+        if ref_blocks:
+            cond = node_helpers.conditioning_set_values(
+                cond, {"minimax_refs": ref_blocks}
+            )
+        return io.NodeOutput(cond, latent)
+
+
 class SeqAttnExtension(ComfyExtension):
     async def get_node_list(self):
         return [
             MiniMaxH3SeqAttn,
             MiniMaxH3QwenBF16Offload,
             MiniMaxH3VAEStreaming,
+            MiniMaxH3ReferenceToVideoSeqAttn,
         ]
 
 
@@ -275,6 +458,7 @@ async def comfy_entrypoint():
 __all__ = [
     "MiniMaxH3SeqAttn",
     "MiniMaxH3QwenBF16Offload",
+    "MiniMaxH3ReferenceToVideoSeqAttn",
     "MiniMaxH3VAEStreaming",
     "SeqAttnExtension",
     "comfy_entrypoint",

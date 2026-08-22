@@ -31,6 +31,57 @@ class SeqAttnSettings:
             raise ValueError("projection_chunk_tokens must be positive")
 
 
+class _SeqAttnRuntimeMetrics:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.last_refined_conditioning_cache_stats: dict[str, int] | None = None
+        self.refined_conditioning_forward_calls = 0
+        self.refined_conditioning_applicable_calls = 0
+        self.refined_conditioning_hits = 0
+        self.refined_conditioning_misses = 0
+        self.refined_conditioning_stores = 0
+        self.refined_conditioning_bypasses = 0
+        self.refined_conditioning_peak_host_bytes = 0
+
+    def record_refined_conditioning_cache_stats(self, stats: dict[str, int]) -> None:
+        with self.lock:
+            self.last_refined_conditioning_cache_stats = dict(stats)
+
+    def last_cache_stats(self) -> dict[str, int] | None:
+        with self.lock:
+            stats = self.last_refined_conditioning_cache_stats
+            return None if stats is None else dict(stats)
+
+    def record_forward(self, applicable: bool) -> None:
+        with self.lock:
+            self.refined_conditioning_forward_calls += 1
+            self.refined_conditioning_applicable_calls += int(applicable)
+
+    def record_cache_event(self, event: str, host_bytes: int = 0) -> None:
+        with self.lock:
+            attribute = f"refined_conditioning_{event}"
+            setattr(self, attribute, getattr(self, attribute) + 1)
+            self.refined_conditioning_peak_host_bytes = max(
+                self.refined_conditioning_peak_host_bytes, int(host_bytes)
+            )
+
+    def lifetime_cache_stats(self) -> dict[str, int]:
+        with self.lock:
+            return {
+                "forward_calls": self.refined_conditioning_forward_calls,
+                "applicable_calls": self.refined_conditioning_applicable_calls,
+                "passthrough_calls": (
+                    self.refined_conditioning_forward_calls
+                    - self.refined_conditioning_applicable_calls
+                ),
+                "hits": self.refined_conditioning_hits,
+                "misses": self.refined_conditioning_misses,
+                "stores": self.refined_conditioning_stores,
+                "bypasses": self.refined_conditioning_bypasses,
+                "peak_host_bytes": self.refined_conditioning_peak_host_bytes,
+            }
+
+
 class SeqAttnRuntime:
     """Per-patched-model runner and refined-conditioning cache.
 
@@ -40,7 +91,12 @@ class SeqAttnRuntime:
     across denoising steps.
     """
 
-    def __init__(self, settings: SeqAttnSettings):
+    def __init__(
+        self,
+        settings: SeqAttnSettings,
+        *,
+        _metrics: _SeqAttnRuntimeMetrics | None = None,
+    ):
         settings.validate()
         self.settings = settings
         self.lock = threading.RLock()
@@ -51,9 +107,10 @@ class SeqAttnRuntime:
         self._refined_conditioning_misses = 0
         self._refined_conditioning_stores = 0
         self._refined_conditioning_bypasses = 0
+        self._metrics = _metrics or _SeqAttnRuntimeMetrics()
 
     def clone(self) -> "SeqAttnRuntime":
-        return SeqAttnRuntime(self.settings)
+        return SeqAttnRuntime(self.settings, _metrics=self._metrics)
 
     @property
     def cache_size(self) -> int:
@@ -76,8 +133,22 @@ class SeqAttnRuntime:
                 ),
             }
 
+    @property
+    def last_refined_conditioning_cache_stats(self) -> dict[str, int] | None:
+        return self._metrics.last_cache_stats()
+
+    @property
+    def lifetime_refined_conditioning_cache_stats(self) -> dict[str, int]:
+        return self._metrics.lifetime_cache_stats()
+
+    def record_refined_conditioning_forward(self, applicable: bool) -> None:
+        self._metrics.record_forward(applicable)
+
     def clear(self) -> None:
         with self.lock:
+            stats = self.refined_conditioning_cache_stats
+            if any(stats[key] for key in ("hits", "misses", "stores", "bypasses")):
+                self._metrics.record_refined_conditioning_cache_stats(stats)
             self._runners.clear()
             self._refined_conditioning_key = None
             self._refined_conditioning = None
@@ -93,8 +164,10 @@ class SeqAttnRuntime:
                 and self._refined_conditioning_key == key
             ):
                 self._refined_conditioning_hits += 1
+                self._metrics.record_cache_event("hits")
                 return self._refined_conditioning
             self._refined_conditioning_misses += 1
+            self._metrics.record_cache_event("misses")
             return None
 
     def store_refined_conditioning(
@@ -112,10 +185,14 @@ class SeqAttnRuntime:
             self._refined_conditioning_key = key
             self._refined_conditioning = conditioning
             self._refined_conditioning_stores += 1
+            self._metrics.record_cache_event(
+                "stores", conditioning.numel() * conditioning.element_size()
+            )
 
     def record_refined_conditioning_bypass(self) -> None:
         with self.lock:
             self._refined_conditioning_bypasses += 1
+            self._metrics.record_cache_event("bypasses")
 
     def runner_for(
         self,

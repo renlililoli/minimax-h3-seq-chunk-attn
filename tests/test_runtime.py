@@ -47,11 +47,16 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
     clone = runtime.clone()
     assert clone.settings == runtime.settings
     assert clone.cache_size == 0
+    assert (
+        clone.lifetime_refined_conditioning_cache_stats
+        == runtime.lifetime_refined_conditioning_cache_stats
+    )
     assert clone.refined_conditioning_cache_stats["entries"] == 0
     assert runtime.cache_size == 1
     runtime.clear()
     assert runtime.cache_size == 0
     assert runtime.refined_conditioning_cache_stats["entries"] == 0
+    assert runtime.last_refined_conditioning_cache_stats is None
 
 
 def test_refined_conditioning_fallback_key_uses_tensor_content_and_metadata():

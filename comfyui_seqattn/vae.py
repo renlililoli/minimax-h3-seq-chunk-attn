@@ -74,7 +74,8 @@ class MiniMaxH3VAEController:
         if pixels.ndim < 5:
             pixels = pixels.movedim(1, 0).unsqueeze(0)
         x = self.vae.process_input(pixels).to(self.vae.vae_dtype)
-        self._load()
+        with torch.inference_mode(False):
+            self._load()
 
         with self._configured_tile_size(), model_management.cuda_device_context(
             self.vae.device
@@ -122,7 +123,8 @@ class MiniMaxH3VAEController:
 
         if latent.ndim != 5 or latent.shape[0] != 1:
             raise ValueError("MiniMax H3 streamed VAE decode requires batch size 1")
-        self._load()
+        with torch.inference_mode(False):
+            self._load()
         if latent.shape[2] == 1:
             with self._configured_tile_size(), model_management.cuda_device_context(
                 self.vae.device

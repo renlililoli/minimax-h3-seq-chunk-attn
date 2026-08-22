@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-08-22
+
+- Add a SeqAttn-aware Ref2VA conditioning node with Qwen preflight before
+  reference VAE work and streaming VAE support for image/video references.
+- Fix streamed VAE model loading when ComfyUI unloads the preceding Qwen model
+  during inference-mode execution.
+- Record upstream MiniMax-H3 refiner execution and SeqAttn compatibility-cache
+  behavior across denoise forwards.
+- Add one-click two-step T2VA, FL2VA, image-reference Ref2VA, and
+  video-reference Ref2VA examples with real outputs and memory traces.
+- Validate all four end-to-end examples at 1344x768 under an 8 GiB process
+  target, including H.264/AAC media read-back checks.
+
 ## 0.2.0 - 2026-08-21
 
 - Add MiniMax-H3 Qwen BF16 conditioning with input preflight and layer offload.

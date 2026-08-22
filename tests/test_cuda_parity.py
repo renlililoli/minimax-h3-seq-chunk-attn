@@ -202,6 +202,7 @@ def test_refined_conditioning_cached_across_denoising_calls():
 
     clone = runtime.clone()
     assert clone.refined_conditioning_cache_stats["entries"] == 0
+    expected_cache_stats = dict(runtime.refined_conditioning_cache_stats)
     runtime.clear()
     assert runtime._refined_conditioning is None
     assert runtime.refined_conditioning_cache_stats == {
@@ -211,6 +212,17 @@ def test_refined_conditioning_cached_across_denoising_calls():
         "bypasses": 0,
         "entries": 0,
         "host_bytes": 0,
+    }
+    assert runtime.last_refined_conditioning_cache_stats == expected_cache_stats
+    assert runtime.lifetime_refined_conditioning_cache_stats == {
+        "forward_calls": 3,
+        "applicable_calls": 3,
+        "passthrough_calls": 0,
+        "hits": 1,
+        "misses": 2,
+        "stores": 2,
+        "bypasses": 0,
+        "peak_host_bytes": expected_cache_stats["host_bytes"],
     }
 
 
