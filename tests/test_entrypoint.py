@@ -21,6 +21,18 @@ def _load_repository_entrypoint():
     return module
 
 
+def _load_repository_entrypoint_without_package_context():
+    module_name = "comfyui_minimax_h3_seqattn_top_level_entrypoint_test"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        REPOSITORY_ROOT / "__init__.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_repository_root_is_a_comfyui_v3_extension():
     module = _load_repository_entrypoint()
     extension = asyncio.run(module.comfy_entrypoint())
@@ -31,3 +43,8 @@ def test_repository_root_is_a_comfyui_v3_extension():
         "MiniMaxH3VAEStreaming",
         "MiniMaxH3ReferenceToVideoSeqAttn",
     ]
+
+
+def test_repository_root_supports_top_level_import():
+    module = _load_repository_entrypoint_without_package_context()
+    assert callable(module.comfy_entrypoint)
