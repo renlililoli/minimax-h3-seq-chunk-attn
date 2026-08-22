@@ -4,17 +4,19 @@ import math
 
 import comfy.patcher_extension
 import node_helpers
+from comfy.ldm.minimax.model import MiniMaxH3Model
+from comfy_api.v0_0_2 import ComfyExtension, io
 from comfy_extras.nodes_minimax_h3 import (
     CANVAS_MULTIPLE,
     FPS,
     REF_IMAGE_SHORT_EDGE,
-    MiniMaxH3ReferenceToVideo as NativeMiniMaxH3ReferenceToVideo,
     _empty_av_latent,
     _resize,
     adapt_canvas,
 )
-from comfy.ldm.minimax.model import MiniMaxH3Model
-from comfy_api.v0_0_2 import ComfyExtension, io
+from comfy_extras.nodes_minimax_h3 import (
+    MiniMaxH3ReferenceToVideo as NativeMiniMaxH3ReferenceToVideo,
+)
 
 from .minimax_h3 import streaming_minimax_h3_forward
 from .qwen import patch_minimax_h3_qwen_clip

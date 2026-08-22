@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import comfy.patcher_extension
 import pytest
 import torch
-from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
 from comfy.ldm.minimax.model import MiniMaxH3Model
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
+from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
 
 from comfyui_seqattn import nodes
 from comfyui_seqattn import vae as vae_mod

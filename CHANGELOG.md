@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 - 2026-08-22
+
+- Fix import ordering so the published CI static checks pass.
+- Keep the package runtime version synchronized with project metadata.
+
 ## 0.3.0 - 2026-08-22
 
 - Add a SeqAttn-aware Ref2VA conditioning node with Qwen preflight before

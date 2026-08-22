@@ -7,7 +7,6 @@ import types
 import torch
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
-
 STATE_KEY = "_minimax_h3_seqattn_vae_controller"
 
 
