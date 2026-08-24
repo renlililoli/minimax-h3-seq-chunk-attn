@@ -50,6 +50,9 @@ for scenario in $scenario_list; do
     -e TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
     -e PYTHONDONTWRITEBYTECODE=1 \
     -e PYTORCH_ALLOC_CONF=expandable_segments:True \
+    -e MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" \
+    -e MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-131072}" \
+    -e MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-0}" \
     -e SEQATTN_EXAMPLE_NVML_GPU_INDEX=0 \
     -v "$package_root:$install_dir:ro" \
     -v "$models_dir:/opt/ComfyUI/models:ro" \

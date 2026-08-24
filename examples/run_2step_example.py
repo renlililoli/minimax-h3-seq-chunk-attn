@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import gc
 import gzip
 import json
 import os
@@ -25,6 +27,21 @@ try:
     import pynvml
 except ImportError:  # pragma: no cover - ComfyUI images normally include it
     pynvml = None
+
+
+def release_unused_host_memory() -> None:
+    gc.collect()
+    host_empty_cache = getattr(torch._C, "_host_emptyCache", None)
+    if callable(host_empty_cache):
+        host_empty_cache()
+    gc.collect()
+    try:
+        malloc_trim = ctypes.CDLL(None).malloc_trim
+        malloc_trim.argtypes = [ctypes.c_size_t]
+        malloc_trim.restype = ctypes.c_int
+        malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -616,9 +633,17 @@ def main() -> int:
         result["packed_sequence"] = build_packed_layout(
             PackedLayout, positive, latent, frames
         )
-        del clip, conditioning_inputs
         model_management.unload_all_models()
+        del (
+            clip,
+            conditioning_inputs,
+            original_preflight,
+            qwen_controller,
+            recording_preflight,
+            video_vae,
+        )
         model_management.soft_empty_cache()
+        release_unused_host_memory()
 
         model = phase(
             "diffusion_model_load",
@@ -690,8 +715,18 @@ def main() -> int:
         del guider, model, positive, latent
         model_management.unload_all_models()
         model_management.soft_empty_cache()
+        release_unused_host_memory()
 
         video_latent = sampled["samples"].unbind()[0]
+        video_vae = phase(
+            "video_vae_reload",
+            lambda: comfy_nodes.VAELoader().load_vae(
+                "minimax_h3_video_vae_fp16.safetensors"
+            )[0],
+        )
+        video_vae = patch_minimax_h3_video_vae(
+            video_vae, tile_size=192, workspace_mib=512
+        )
         decoded = phase("video_decode", lambda: video_vae.decode(video_latent))
         if decoded.ndim == 5:
             decoded = decoded[0]

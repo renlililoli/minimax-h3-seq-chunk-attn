@@ -29,6 +29,9 @@ mkdir -p "$output_dir"
 
 export PYTHONDONTWRITEBYTECODE=1
 export PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:True}
+export MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+export MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-131072}
+export MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-0}
 
 exec "${PYTHON:-python3}" "$example_dir/run_2step_example.py" \
   --scenario "$scenario" \
