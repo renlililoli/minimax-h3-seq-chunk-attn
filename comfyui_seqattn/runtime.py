@@ -4,8 +4,7 @@ import threading
 from dataclasses import dataclass
 
 import torch
-
-from ._vendor.seqattn_core import (
+from seqattn_core import (
     ProjectedAttentionRunner,
     ProjectionPipelineConfig,
     StreamingAttentionConfig,

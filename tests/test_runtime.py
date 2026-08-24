@@ -3,10 +3,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import seqattn_core
 import torch
 
 from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
+
+
+def test_seqattn_dependency_version():
+    assert seqattn_core.__version__ == "0.3.0a2"
 
 
 def test_settings_validation():

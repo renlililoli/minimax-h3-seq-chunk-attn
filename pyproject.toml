@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minimax-h3-seqattn"
-version = "0.3.1"
+version = "0.3.2"
 description = "Exact CPU-backed SeqAttn for native ComfyUI MiniMax-H3 models"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
-license-files = ["LICENSE", "LICENSES/Apache-2.0.txt"]
+license-files = ["LICENSE"]
 authors = [{name = "renlililoli"}]
 keywords = ["comfyui", "minimax-h3", "attention", "low-vram", "video"]
 classifiers = [
@@ -19,7 +19,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = []
+dependencies = [
+  "seqattn-core @ https://github.com/renlililoli/stream-attn/archive/2641fdf87cbd158026533a7bfb457ce0f951c965.tar.gz",
+]
 
 [project.urls]
 Repository = "https://github.com/renlililoli/minimax-h3-seq-chunk-attn"
@@ -45,7 +47,6 @@ addopts = "-ra"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["comfyui_seqattn/_vendor"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]

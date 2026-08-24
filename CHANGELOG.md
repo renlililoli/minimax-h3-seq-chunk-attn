@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 - 2026-08-24
+
+- Replace the vendored SeqAttn runtime with a direct dependency on
+  `seqattn-core` `0.3.0a2` from upstream tag `v0.3.0-alpha.2`.
+- Pin the dependency to upstream commit `2641fdf` so community installations
+  and development use one authoritative SeqAttn source revision.
+
 ## 0.3.1 - 2026-08-22
 
 - Fix import ordering so the published CI static checks pass.

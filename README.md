@@ -235,9 +235,12 @@ cd /path/to/ComfyUI/custom_nodes
 git clone --branch community/comfyui-minimax-h3-seqattn \
   https://github.com/renlililoli/minimax-h3-seq-chunk-attn.git \
   ComfyUI-MiniMaxH3-SeqAttn
+cd ComfyUI-MiniMaxH3-SeqAttn
+python -m pip install -e .
 ```
 
-No submodules or additional Python packages are required.
+No Git submodules are required. Installation resolves the pinned
+`seqattn-core` runtime directly from its upstream release commit.
 
 ## Requirements
 
@@ -328,8 +331,8 @@ ComfyUI nodes or models leave less GPU headroom.
 
 ## License
 
-The custom node is GPL-3.0. The bundled SeqAttn runtime is Apache-2.0. See
-[`LICENSE`](LICENSE), [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt), and
+The custom node is GPL-3.0. Its external `seqattn-core` dependency is
+Apache-2.0. See [`LICENSE`](LICENSE) and
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 See the

@@ -13,19 +13,18 @@ The complete GPL-3.0 license text is provided in `LICENSE`.
 
 ## stream-attn / seqattn_core
 
-`comfyui_seqattn/_vendor/seqattn_core` is vendored from the `stream-attn`
-project so ComfyUI Manager installations do not depend on Git submodules or an
-unrelated package that currently occupies the `seqattn` name on PyPI.
+This custom node depends on the separately packaged `seqattn-core` runtime from
+the `stream-attn` project. The dependency is pinned to an immutable upstream
+commit so the community package does not carry or maintain a second copy of the
+SeqAttn sources.
 
 - Upstream: https://github.com/renlililoli/stream-attn
-- Commit: `9eb3dfb1c7d9df1d84ec96b6b088896864ed06d5`
-- Upstream version: `0.3.0`
+- Commit: `2641fdf87cbd158026533a7bfb457ce0f951c965`
+- Upstream tag: `v0.3.0-alpha.2`
+- Package version: `0.3.0a2`
 - License: Apache License 2.0
 
-The Apache-2.0 license text is provided in `LICENSES/Apache-2.0.txt`. The
-community package contains only the projection and streaming-attention runtime
-dependency closure. Those source modules are kept at the recorded upstream
-commit; package exports are narrowed to the symbols used by this custom node.
+The dependency distributes its own Apache-2.0 license and package metadata.
 
 ## Model weights
 
