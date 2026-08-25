@@ -75,9 +75,10 @@ def test_one_block_native_streaming_parity():
     )
     runtime = runtime_mod.SeqAttnRuntime(
         runtime_mod.SeqAttnSettings(
-            activation_workspace_mib=128,
+            q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            projection_chunk_tokens=4,
+            qkv_tile_tokens=4,
+            mlp_tile_tokens=4,
         )
     )
     actual = streaming.streaming_minimax_h3_forward(
@@ -147,9 +148,10 @@ def test_refined_conditioning_cached_across_denoising_calls():
     ]
     runtime = runtime_mod.SeqAttnRuntime(
         runtime_mod.SeqAttnSettings(
-            activation_workspace_mib=128,
+            q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            projection_chunk_tokens=4,
+            qkv_tile_tokens=4,
+            mlp_tile_tokens=4,
         )
     )
     try:
@@ -282,9 +284,10 @@ def test_curve_adaln_t2va_fl2va_and_ref2va_layout_parity():
 
     runtime = runtime_mod.SeqAttnRuntime(
         runtime_mod.SeqAttnSettings(
-            activation_workspace_mib=128,
+            q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            projection_chunk_tokens=4,
+            qkv_tile_tokens=4,
+            mlp_tile_tokens=4,
         )
     )
     for payload in payloads:
@@ -322,9 +325,10 @@ def test_full_50_block_tiny_forward_parity():
     )
     runtime = runtime_mod.SeqAttnRuntime(
         runtime_mod.SeqAttnSettings(
-            activation_workspace_mib=128,
+            q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            projection_chunk_tokens=4,
+            qkv_tile_tokens=4,
+            mlp_tile_tokens=4,
         )
     )
     actual = streaming.streaming_minimax_h3_forward(
@@ -369,9 +373,10 @@ def test_projected_attention_full_output_parity(tokens):
 
     runtime = runtime_mod.SeqAttnRuntime(
         runtime_mod.SeqAttnSettings(
-            activation_workspace_mib=256,
+            q_chunk_tokens=256,
             kv_chunk_tokens=256,
-            projection_chunk_tokens=257,
+            qkv_tile_tokens=257,
+            mlp_tile_tokens=257,
         )
     )
     runner = runtime.runner_for(

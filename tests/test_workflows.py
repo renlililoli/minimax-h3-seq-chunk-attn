@@ -28,9 +28,8 @@ def test_fl2va_workflows_are_standalone_and_use_safe_defaults():
 
         assert nodes["UNETLoader"]["widgets_values"][0] == FL2VA_MODEL
         assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [
-            1024,
+            5760,
             4096,
-            "fit",
             True,
         ]
         assert nodes["MiniMaxH3QwenBF16Offload"]["widgets_values"] == [
@@ -88,6 +87,11 @@ def test_ref2va_workflow_uses_streaming_vae_and_matching_references():
     nodes = _nodes_by_type(workflow)
 
     assert nodes["UNETLoader"]["widgets_values"][0] == REF2VA_MODEL
+    assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [
+        5760,
+        4096,
+        True,
+    ]
     assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == [
         192,
         512,

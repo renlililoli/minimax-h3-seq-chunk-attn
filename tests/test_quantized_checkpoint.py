@@ -43,9 +43,10 @@ def test_real_quantized_block_native_streaming_parity():
     )
     runtime = runtime_mod.SeqAttnRuntime(
         runtime_mod.SeqAttnSettings(
-            activation_workspace_mib=256,
+            q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            projection_chunk_tokens=4,
+            qkv_tile_tokens=4,
+            mlp_tile_tokens=4,
         )
     )
     actual = streaming.streaming_minimax_h3_forward(

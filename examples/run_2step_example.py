@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import traceback
+from collections import Counter
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
@@ -123,7 +124,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--target-vram-mib", type=int, default=8192)
-    parser.add_argument("--reserve-vram-gib", type=float, default=3.0)
+    parser.add_argument(
+        "--reserve-vram-gib",
+        type=float,
+        default=3.0,
+        help=(
+            "Minimum ComfyUI/AIMDO reserve. The effective reserve is raised "
+            "as needed to keep process VRAM under --target-vram-mib."
+        ),
+    )
+    parser.add_argument(
+        "--aimdo-watermark-margin-mib",
+        type=float,
+        default=2560.0,
+        help="Additional reserve for transient DynamicVRAM fault batches.",
+    )
     parser.add_argument("--sample-interval-ms", type=float, default=50.0)
     parser.add_argument("--prompt")
     parser.add_argument("--audio-device", choices=("cpu", "cuda"), default="cpu")
@@ -158,6 +173,23 @@ def atomic_write_json(path: Path, payload: dict) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_write_json_gz(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    try:
+        with gzip.open(temporary, "wt", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"), allow_nan=False)
+            handle.write("\n")
         os.chmod(temporary, 0o644)
         os.replace(temporary, path)
     finally:
@@ -287,12 +319,14 @@ def initialize_vram_budget(target_mib: int) -> dict:
     torch.empty(1, device="cuda")
     torch.cuda.synchronize()
     physical_mib = torch.cuda.get_device_properties(0).total_memory / 2**20
+    nvml_total_mib = physical_mib
     context_mib = 0.0
     if pynvml is not None:
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(
             int(os.environ.get("SEQATTN_EXAMPLE_NVML_GPU_INDEX", "0"))
         )
+        nvml_total_mib = pynvml.nvmlDeviceGetMemoryInfo(handle).total / 2**20
         for process in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
             if process.pid == os.getpid() and process.usedGpuMemory is not None:
                 context_mib += float(process.usedGpuMemory) / 2**20
@@ -309,6 +343,7 @@ def initialize_vram_budget(target_mib: int) -> dict:
         "allocator_limit_mib": allocator_limit_mib,
         "allocator_fraction": fraction,
         "physical_mib": physical_mib,
+        "nvml_total_mib": nvml_total_mib,
     }
 
 
@@ -439,6 +474,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     result_path = output_dir / "result.json"
     trace_path = output_dir / "memory_trace.csv.gz"
+    weight_schedule_path = output_dir / "weight_schedule.json.gz"
     video_path = output_dir / "output.mp4"
 
     result = {
@@ -452,6 +488,7 @@ def main() -> int:
             "steps": args.steps,
             "seed": args.seed,
             "target_vram_mib": args.target_vram_mib,
+            "aimdo_watermark_margin_mib": args.aimdo_watermark_margin_mib,
             "audio_device": args.audio_device,
             "prompt": prompt,
         },
@@ -471,14 +508,40 @@ def main() -> int:
     }
     video_path.unlink(missing_ok=True)
     trace_path.unlink(missing_ok=True)
+    weight_schedule_path.unlink(missing_ok=True)
     atomic_write_json(result_path, result)
 
     sampler = None
+    runtime = None
     original_cwd = Path.cwd()
     exit_code = 0
     try:
         budget = initialize_vram_budget(args.target_vram_mib)
+        requested_reserve_mib = args.reserve_vram_gib * 1024.0
+        aimdo_watermark_margin_mib = args.aimdo_watermark_margin_mib
+        target_derived_headroom_mib = max(
+            0.0,
+            budget["nvml_total_mib"]
+            - args.target_vram_mib
+            + budget["safety_mib"]
+            + aimdo_watermark_margin_mib,
+        )
+        effective_headroom_mib = max(
+            requested_reserve_mib, target_derived_headroom_mib
+        )
+        effective_headroom_bytes = int(effective_headroom_mib * 2**20)
         result["memory_budget"] = budget
+        result["memory_budget"].update(
+            {
+                "requested_reserve_mib": requested_reserve_mib,
+                "target_derived_aimdo_headroom_mib": (
+                    target_derived_headroom_mib
+                ),
+                "aimdo_watermark_margin_mib": aimdo_watermark_margin_mib,
+                "effective_aimdo_headroom_mib": effective_headroom_mib,
+                "aimdo_device_extra_headroom_mib": 0.0,
+            }
+        )
         sampler = MemorySampler(args.sample_interval_ms / 1000.0)
         sampler.start()
 
@@ -486,14 +549,17 @@ def main() -> int:
             sys.argv[0],
             "--lowvram",
             "--reserve-vram",
-            str(args.reserve_vram_gib),
+            str(effective_headroom_mib / 1024.0),
         ]
         sys.path.insert(0, str(PACKAGE_ROOT))
         sys.path.insert(0, str(comfyui_dir))
         os.chdir(comfyui_dir)
 
         import nodes as comfy_nodes
+        import comfy.memory_management as memory_management
         import comfy.model_management as model_management
+        import comfy.model_patcher as model_patcher
+        import comfy_aimdo.control as aimdo_control
         from comfy.ldm.minimax.model import PackedLayout
         from comfy_extras.nodes_audio import VAEDecodeAudio
         from comfy_extras.nodes_custom_sampler import (
@@ -516,6 +582,39 @@ def main() -> int:
         )
         from comfyui_seqattn.vae import patch_minimax_h3_video_vae
 
+        devices = model_management.get_all_torch_devices()
+        try:
+            aimdo_control_initialized = aimdo_control.init(
+                simple_vram_headroom=effective_headroom_bytes,
+                nvml_pressure=True,
+            )
+        except TypeError:
+            aimdo_control_initialized = aimdo_control.init(
+                simple_vram_headroom=effective_headroom_bytes
+            )
+        if not aimdo_control_initialized:
+            raise RuntimeError("ComfyUI DynamicVRAM control initialization failed")
+        try:
+            aimdo_devices_initialized = aimdo_control.init_devices(
+                (device.index, 0) for device in devices
+            )
+        except TypeError:
+            aimdo_devices_initialized = aimdo_control.init_devices(
+                device.index for device in devices
+            )
+        if not aimdo_devices_initialized:
+            raise RuntimeError("ComfyUI DynamicVRAM device initialization failed")
+        model_patcher.CoreModelPatcher = model_patcher.ModelPatcherDynamic
+        memory_management.aimdo_enabled = True
+        result["dynamic_vram"] = {
+            "devices_initialized": True,
+            "devices": [str(device) for device in devices],
+            "simple_headroom_mib": effective_headroom_mib,
+            "device_extra_headroom_mib": 0.0,
+            "core_model_patcher": model_patcher.CoreModelPatcher.__name__,
+            "aimdo_enabled": bool(memory_management.aimdo_enabled),
+        }
+
         install_budget_aware_free_memory(model_management, budget)
 
         def phase(name, function):
@@ -532,6 +631,8 @@ def main() -> int:
                     {
                         "name": name,
                         "seconds": end - start,
+                        "start_elapsed_ms": start_ms,
+                        "end_elapsed_ms": end_ms,
                         **sampler.interval_stats(start_ms, end_ms),
                     }
                 )
@@ -653,9 +754,8 @@ def main() -> int:
         )
         model = patch_minimax_h3_model(
             model,
-            activation_workspace_mib=1024,
+            q_chunk_tokens=5760,
             kv_chunk_tokens=4096,
-            planner_mode="fit",
         )
         runtime = model.model_options["transformer_options"][STATE_KEY]
         diffusion_model = model.model.diffusion_model
@@ -665,7 +765,16 @@ def main() -> int:
             "upstream_refiner_required": (
                 int(conditioning_tensor.shape[-1]) != int(diffusion_model.hidden_size)
             ),
+            "patcher_type": type(model).__name__,
+            "is_dynamic": bool(model.is_dynamic()),
+            "current_patcher_type": (
+                None
+                if model.model.current_patcher is None
+                else type(model.model.current_patcher).__name__
+            ),
         }
+        if not model.is_dynamic():
+            raise RuntimeError("MiniMax-H3 DiT did not load with DynamicVRAM")
         upstream_refiner_calls = {"condition_proj": 0, "token_refiner": 0}
 
         def count_condition_proj(_module, _inputs, _output):
@@ -746,6 +855,11 @@ def main() -> int:
             )
             if args.audio_device == "cpu":
                 cpu = torch.device("cpu")
+                register_load_device = getattr(
+                    audio_vae.patcher, "register_load_device", None
+                )
+                if register_load_device is not None:
+                    register_load_device(cpu)
                 audio_vae.device = cpu
                 audio_vae.output_device = cpu
                 audio_vae.patcher.load_device = cpu
@@ -785,6 +899,42 @@ def main() -> int:
         result["traceback"] = traceback.format_exc()
     finally:
         os.chdir(original_cwd)
+        if runtime is not None:
+            weight_records = runtime.weight_schedule_records
+            if weight_records:
+                atomic_write_json_gz(weight_schedule_path, weight_records)
+                event_counts = Counter(
+                    record["event"] for record in weight_records
+                )
+                result["seqattn_weight_schedule"] = {
+                    "path": str(weight_schedule_path),
+                    "record_count": len(weight_records),
+                    "event_counts": dict(sorted(event_counts.items())),
+                    "forward_count": sum(
+                        record["event"] == "prepare"
+                        and record["block_index"] == 0
+                        for record in weight_records
+                    ),
+                    "max_staged_blocks": max(
+                        record["staged_block_count"]
+                        for record in weight_records
+                    ),
+                    "vbar_loaded_peak_mib": max(
+                        record["vbar_loaded_mib"]
+                        for record in weight_records
+                    ),
+                    "ready_blocked_seconds": sum(
+                        record.get("blocked_seconds", 0.0)
+                        for record in weight_records
+                        if record["event"] == "ready"
+                    ),
+                    "settings": {
+                        "q_chunk_tokens": runtime.settings.q_chunk_tokens,
+                        "kv_chunk_tokens": runtime.settings.kv_chunk_tokens,
+                        "qkv_tile_tokens": runtime.settings.qkv_tile_tokens,
+                        "mlp_tile_tokens": runtime.settings.mlp_tile_tokens,
+                    },
+                }
         if sampler is not None:
             sampler.stop()
             sampler.write_csv_gz(trace_path)

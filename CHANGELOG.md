@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 - 2026-08-25
+
+- Replace the old split MiniMax-H3 denoise path with the fused block runtime
+  published by `seqattn-core[dit]` `0.3.0a3`.
+- Keep one pinned CPU hidden tensor between blocks while attention output,
+  output projection, residual updates, and the complete MLP remain on GPU in
+  bounded tiles.
+- Replace ComfyUI's DiT prefetch queue with a strict current-block plus
+  next-block VBAR pipeline owned by the SeqAttn integration.
+- Replace workspace/planner node controls with explicit Q and K/V chunk sizes;
+  load QKV and MLP tile sizes from the shared SeqAttn TOML configuration.
+- Preserve the community Qwen, VAE, Ref2VA, cache-lifetime, and example paths.
+- Validate the complete 1344x768, 124-frame, 81,180-token Ref2VA pipeline for
+  20 steps at a 7,708 MiB whole-process peak, with a flat 4,276 MiB denoise
+  steady state and a strict two-block weight staging limit.
+
 ## 0.3.2 - 2026-08-24
 
 - Replace the vendored SeqAttn runtime with a direct dependency on

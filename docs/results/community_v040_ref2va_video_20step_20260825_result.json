@@ -15,13 +15,13 @@
     "height": 768,
     "prompt": "Use <Video 1> as the exact reference for camera motion, timing, existing subjects, scene geometry, and continuity. Preserve the original shot while adding one clearly visible woman in a red jacket who enters from the right, points toward the main object, then turns and waves. Photorealistic, stable identity, no cuts, no text, no logos.",
     "seed": 0,
-    "steps": 2,
+    "steps": 20,
     "target_vram_mib": 8192,
     "width": 1344
   },
   "denoise": {
-    "steps": 2,
-    "torch_peak_allocated_mib": 2496.91259765625,
+    "steps": 20,
+    "torch_peak_allocated_mib": 2496.91748046875,
     "torch_peak_reserved_mib": 2808.0
   },
   "diffusion_model": {
@@ -48,13 +48,13 @@
     "cuda": "12.8",
     "cuda_visible_devices": null,
     "gpu": "NVIDIA GeForce RTX 5090",
-    "hostname": "0b52c552aec8",
+    "hostname": "73026c58170f",
     "package_commit": "105600c36b92c80699c9646522089389efa7ae98",
     "package_root": "/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn",
     "python": "3.12.3",
     "torch": "2.10.0+cu128"
   },
-  "finished_at_utc": "2026-08-25T11:59:44.733711+00:00",
+  "finished_at_utc": "2026-08-25T12:36:37.789097+00:00",
   "inputs": {
     "ref_video": {
       "frames": 124,
@@ -65,9 +65,9 @@
     }
   },
   "memory": {
-    "cpu_rss_peak_mib": 32608.28515625,
+    "cpu_rss_peak_mib": 32666.3984375,
     "nvml_process_peak_mib": 7708.0,
-    "sample_count": 28649,
+    "sample_count": 96121,
     "sample_interval_ms": 20.0,
     "trace_path": "/results/memory_trace.csv.gz"
   },
@@ -105,7 +105,7 @@
         "width": 1344
       }
     },
-    "size_bytes": 1126025,
+    "size_bytes": 1322220,
     "video_shape": [
       124,
       768,
@@ -155,112 +155,112 @@
   },
   "phases": [
     {
-      "cpu_rss_peak_mib": 1344.9453125,
-      "end_elapsed_ms": 15604.612470138818,
+      "cpu_rss_peak_mib": 1332.03125,
+      "end_elapsed_ms": 12882.10351811722,
       "name": "video_vae_load",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 6,
-      "seconds": 0.11897914204746485,
-      "start_elapsed_ms": 15485.633328091353
+      "sample_count": 5,
+      "seconds": 0.1165817272849381,
+      "start_elapsed_ms": 12765.521790832281
     },
     {
-      "cpu_rss_peak_mib": 3950.2734375,
-      "end_elapsed_ms": 16386.320592835546,
+      "cpu_rss_peak_mib": 4027.6171875,
+      "end_elapsed_ms": 13673.110100906342,
       "name": "qwen_load",
       "nvml_process_peak_mib": 500.0,
       "sample_count": 15,
-      "seconds": 0.7797238030470908,
-      "start_elapsed_ms": 15606.596789788455
+      "seconds": 0.7891136961989105,
+      "start_elapsed_ms": 12883.996404707432
     },
     {
-      "cpu_rss_peak_mib": 6209.27734375,
-      "end_elapsed_ms": 17053.62014612183,
+      "cpu_rss_peak_mib": 6171.125,
+      "end_elapsed_ms": 14390.952887944877,
       "name": "reference_video_decode",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 26,
-      "seconds": 0.6540371109731495,
-      "start_elapsed_ms": 16399.58303514868
+      "sample_count": 30,
+      "seconds": 0.7059878502041101,
+      "start_elapsed_ms": 13684.965037740767
     },
     {
-      "cpu_rss_peak_mib": 26176.453125,
-      "end_elapsed_ms": 177878.17757576704,
+      "cpu_rss_peak_mib": 26170.32421875,
+      "end_elapsed_ms": 175100.5073026754,
       "name": "conditioning",
       "nvml_process_peak_mib": 7708.0,
-      "sample_count": 7621,
-      "seconds": 160.82435416290537,
-      "start_elapsed_ms": 17053.823412861675
+      "sample_count": 7613,
+      "seconds": 160.70938349189237,
+      "start_elapsed_ms": 14391.123810783029
     },
     {
-      "cpu_rss_peak_mib": 5468.7421875,
-      "end_elapsed_ms": 180176.82463675737,
+      "cpu_rss_peak_mib": 5450.51953125,
+      "end_elapsed_ms": 177654.4777280651,
       "name": "diffusion_model_load",
       "nvml_process_peak_mib": 884.0,
       "sample_count": 5,
-      "seconds": 0.0973425917327404,
-      "start_elapsed_ms": 180079.48204502463
+      "seconds": 0.09411619696766138,
+      "start_elapsed_ms": 177560.36153109744
     },
     {
-      "cpu_rss_peak_mib": 32608.28515625,
-      "end_elapsed_ms": 532371.364295017,
+      "cpu_rss_peak_mib": 32666.3984375,
+      "end_elapsed_ms": 1990600.1550611109,
       "name": "denoise",
       "nvml_process_peak_mib": 4386.0,
-      "sample_count": 16467,
-      "seconds": 352.1838168608956,
-      "start_elapsed_ms": 180187.54743412137
+      "sample_count": 84058,
+      "seconds": 1812.934682985302,
+      "start_elapsed_ms": 177665.4720758088
     },
     {
-      "cpu_rss_peak_mib": 4564.06640625,
-      "end_elapsed_ms": 537509.9468729459,
+      "cpu_rss_peak_mib": 4627.2109375,
+      "end_elapsed_ms": 1995827.2737278603,
       "name": "video_vae_reload",
       "nvml_process_peak_mib": 1492.0,
       "sample_count": 6,
-      "seconds": 0.13844378013163805,
-      "start_elapsed_ms": 537371.5030928142
+      "seconds": 0.13934454880654812,
+      "start_elapsed_ms": 1995687.9291790538
     },
     {
-      "cpu_rss_peak_mib": 10611.2890625,
-      "end_elapsed_ms": 600269.6638307534,
+      "cpu_rss_peak_mib": 10635.1640625,
+      "end_elapsed_ms": 2058510.3397727944,
       "name": "video_decode",
       "nvml_process_peak_mib": 6002.0,
-      "sample_count": 2953,
-      "seconds": 62.75250171497464,
-      "start_elapsed_ms": 537517.1621157788
+      "sample_count": 2950,
+      "seconds": 62.66217519482598,
+      "start_elapsed_ms": 1995848.1645779684
     },
     {
-      "cpu_rss_peak_mib": 5720.2421875,
-      "end_elapsed_ms": 601145.6627277657,
+      "cpu_rss_peak_mib": 5758.19140625,
+      "end_elapsed_ms": 2059412.2520848177,
       "name": "audio_vae_load",
       "nvml_process_peak_mib": 1492.0,
       "sample_count": 4,
-      "seconds": 0.08199533773586154,
-      "start_elapsed_ms": 601063.6673900299
+      "seconds": 0.08979046391323209,
+      "start_elapsed_ms": 2059322.4616209045
     },
     {
-      "cpu_rss_peak_mib": 6121.05859375,
-      "end_elapsed_ms": 607898.6874767579,
+      "cpu_rss_peak_mib": 6169.94921875,
+      "end_elapsed_ms": 2066277.2803776897,
       "name": "audio_decode",
       "nvml_process_peak_mib": 1492.0,
-      "sample_count": 319,
-      "seconds": 6.747406350914389,
-      "start_elapsed_ms": 601151.2811258435
+      "sample_count": 323,
+      "seconds": 6.846740015782416,
+      "start_elapsed_ms": 2059430.5403619073
     },
     {
-      "cpu_rss_peak_mib": 6208.91015625,
-      "end_elapsed_ms": 613882.4555128813,
+      "cpu_rss_peak_mib": 6241.2265625,
+      "end_elapsed_ms": 2072198.9226648584,
       "name": "media_write",
       "nvml_process_peak_mib": 1492.0,
-      "sample_count": 232,
-      "seconds": 5.97414425201714,
-      "start_elapsed_ms": 607908.3112608641
+      "sample_count": 221,
+      "seconds": 5.898099801968783,
+      "start_elapsed_ms": 2066300.8228628896
     },
     {
-      "cpu_rss_peak_mib": 6011.22265625,
-      "end_elapsed_ms": 614005.7573551312,
+      "cpu_rss_peak_mib": 6047.25,
+      "end_elapsed_ms": 2072333.89877202,
       "name": "media_probe",
       "nvml_process_peak_mib": 1492.0,
       "sample_count": 6,
-      "seconds": 0.11570287309587002,
-      "start_elapsed_ms": 613890.0544820353
+      "seconds": 0.11602764204144478,
+      "start_elapsed_ms": 2072217.8711299784
     }
   ],
   "qwen_preflight": {
@@ -276,27 +276,27 @@
   "refined_conditioning_cache": {
     "applicable_calls": 0,
     "bypasses": 0,
-    "forward_calls": 2,
+    "forward_calls": 20,
     "hits": 0,
     "misses": 0,
-    "passthrough_calls": 2,
+    "passthrough_calls": 20,
     "peak_host_bytes": 0,
     "stores": 0
   },
   "scenario": "ref2va_video",
   "seqattn_weight_schedule": {
     "event_counts": {
-      "compute_end": 100,
-      "compute_start": 100,
-      "prepare": 100,
-      "ready": 100,
-      "release": 100
+      "compute_end": 1000,
+      "compute_start": 1000,
+      "prepare": 1000,
+      "ready": 1000,
+      "release": 1000
     },
-    "forward_count": 2,
+    "forward_count": 20,
     "max_staged_blocks": 2,
     "path": "/results/weight_schedule.json.gz",
-    "ready_blocked_seconds": 0.010507230181246996,
-    "record_count": 500,
+    "ready_blocked_seconds": 0.1941229784861207,
+    "record_count": 5000,
     "settings": {
       "kv_chunk_tokens": 4096,
       "mlp_tile_tokens": 4096,
@@ -305,7 +305,7 @@
     },
     "vbar_loaded_peak_mib": 320.0
   },
-  "started_at_utc": "2026-08-25T11:49:30.177639+00:00",
+  "started_at_utc": "2026-08-25T12:02:04.255199+00:00",
   "status": "success",
   "upstream_refiner": {
     "condition_proj": 1,
