@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minimax-h3-seqattn"
-version = "0.3.2"
+version = "0.4.0"
 description = "Exact CPU-backed SeqAttn for native ComfyUI MiniMax-H3 models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-  "seqattn-core @ https://github.com/renlililoli/stream-attn/archive/2641fdf87cbd158026533a7bfb457ce0f951c965.tar.gz",
+  "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/86049c058a4dfb26da408e79ca2c95677ebbd250.tar.gz",
 ]
 
 [project.urls]

@@ -1051,9 +1051,8 @@
         "Node name for S&R": "MiniMaxH3SeqAttn"
       },
       "widgets_values": [
-        1024,
+        5760,
         4096,
-        "fit",
         true
       ]
     },

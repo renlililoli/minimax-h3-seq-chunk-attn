@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from contextlib import ExitStack, contextmanager, nullcontext
 
 import comfy.ldm.common_dit
 import comfy.model_management
-import comfy.model_prefetch
 import comfy.quant_ops
 import torch
 from comfy.ldm.minimax.model import (
@@ -20,12 +20,27 @@ from comfy.ldm.minimax.model import (
     unpack_audio,
     unpatchify_video,
 )
+from seqattn_core import H3BlockOps, H3SequenceMeta
 
 from .runtime import SeqAttnRuntime
+from .weight_stream import BlockWeightStreamer
 
 
 def _pinned_empty(shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
     return torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
+
+
+def _lease(module):
+    lease = getattr(module, "computation_lease", None)
+    return nullcontext(module) if lease is None else lease(allow_preparing=True)
+
+
+@contextmanager
+def _lease_group(*modules):
+    with ExitStack() as stack:
+        for module in modules:
+            stack.enter_context(_lease(module))
+        yield
 
 
 def _segment_intersections(
@@ -381,26 +396,17 @@ def _time_and_modality(
     return sigma_v, shift_v, shift_a, seg_t, t_row, mod_segments, t_emb
 
 
-def _stream_block(
+def _block_ops(
     model: MiniMaxH3Model,
     block,
     hidden: torch.Tensor,
-    output: torch.Tensor,
     layout: PackedLayout,
     mod_segments: list[tuple[int, int, int]],
     t_emb: torch.Tensor,
-    runtime: SeqAttnRuntime,
-) -> None:
+) -> H3BlockOps:
     device = t_emb.device
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
         block.adaln_proj(t_emb)
-    )
-    runner = runtime.runner_for(
-        tokens=layout.seq_len,
-        heads=block.attn.heads,
-        head_dim=block.attn.head_dim,
-        dtype=hidden.dtype,
-        device=device,
     )
     position_ids = layout.position_ids
 
@@ -411,39 +417,35 @@ def _stream_block(
         )
         return _qkv_with_rope(block, tile, position_ids[start:stop], model)
 
-    def output_projector(attention: torch.Tensor, start: int, stop: int):
+    def attention_epilogue(attention: torch.Tensor, start: int, stop: int):
         update = block.attn.out_proj(attention)
         residual = hidden[start:stop].to(device, non_blocking=True)
         return _gate_tile(
             residual, update, gate_msa, mod_segments, start, stop
         )
 
-    cu_seqlens = torch.tensor([0, layout.seq_len], dtype=torch.int32)
-    runner(
-        hidden,
-        cu_seqlens,
-        project_qkv=project_qkv,
-        output_projector=output_projector,
-        out=output,
-        output_features=model.hidden_size,
-        softmax_scale=block.attn.head_dim**-0.5,
-    )
-
-    chunk = runtime.settings.projection_chunk_tokens
-    for start in range(0, layout.seq_len, chunk):
-        stop = min(start + chunk, layout.seq_len)
-        residual = output[start:stop].to(device, non_blocking=True)
+    def mlp(post_attention: torch.Tensor, start: int, stop: int):
+        residual = post_attention
         tile = block.norm2(residual)
         tile = _modulate_tile(
             tile, shift_mlp, scale_mlp, mod_segments, start, stop
         )
         update = block.mlp(tile)
-        result = _gate_tile(
+        return _gate_tile(
             residual, update, gate_mlp, mod_segments, start, stop
         )
-        hidden[start:stop].copy_(result, non_blocking=True)
-        result.record_stream(torch.cuda.current_stream(device))
-    torch.cuda.synchronize(device)
+
+    return H3BlockOps(
+        project_qkv=project_qkv,
+        attention_epilogue=attention_epilogue,
+        mlp=mlp,
+        qkv_lease=lambda: _lease_group(block.attn.qkv_proj),
+        consumer_lease=lambda: _lease_group(
+            block.attn.out_proj,
+            block.mlp.fc1,
+            block.mlp.fc2,
+        ),
+    )
 
 
 def _final_rows(
@@ -551,31 +553,57 @@ def streaming_minimax_h3_forward(
             payload,
             transformer_options,
             dtype,
-            runtime.settings.projection_chunk_tokens,
+            runtime.settings.qkv_tile_tokens,
         )
-        hidden_b = _pinned_empty(hidden_a.shape, dtype)
+        sequence_meta = H3SequenceMeta(
+            cu_seqlens=torch.tensor([0, layout.seq_len], dtype=torch.int32)
+        )
 
-        prefetch_queue = comfy.model_prefetch.make_prefetch_queue(
-            list(model.blocks), video_x.device, transformer_options
-        )
-        for block in model.blocks:
-            comfy.model_prefetch.prefetch_queue_pop(
-                prefetch_queue, video_x.device, block
+        blocks = list(model.blocks)
+        if blocks:
+            first_block = blocks[0]
+            runner = runtime.dit_runner_for(
+                tokens=layout.seq_len,
+                hidden_features=model.hidden_size,
+                heads=first_block.attn.heads,
+                head_dim=first_block.attn.head_dim,
+                dtype=hidden_a.dtype,
+                device=video_x.device,
             )
-            _stream_block(
-                model,
-                block,
-                hidden_a,
-                hidden_b,
-                layout,
-                mod_segments,
-                t_emb,
-                runtime,
+
+            weight_stream = BlockWeightStreamer(
+                blocks,
+                video_x.device,
+                record=runtime.record_weight_schedule,
             )
-        if prefetch_queue is not None:
-            comfy.model_prefetch.prefetch_queue_pop(
-                prefetch_queue, video_x.device, None
-            )
+            current = weight_stream.prepare(0)
+            try:
+                for index, block in enumerate(blocks):
+                    weight_stream.wait_ready(current)
+                    next_state = (
+                        weight_stream.prepare(index + 1)
+                        if index + 1 < len(blocks)
+                        else None
+                    )
+                    weight_stream.compute_start(current)
+                    runner.run_block_(
+                        hidden_a,
+                        sequence_meta,
+                        _block_ops(
+                            model,
+                            block,
+                            hidden_a,
+                            layout,
+                            mod_segments,
+                            t_emb,
+                        ),
+                        softmax_scale=first_block.attn.head_dim**-0.5,
+                    )
+                    weight_stream.compute_end(current)
+                    weight_stream.release(current)
+                    current = next_state
+            finally:
+                weight_stream.close()
 
         video_seg = next(
             (a, b, t_row[seg_t["video"]])
@@ -587,7 +615,7 @@ def streaming_minimax_h3_forward(
             for a, b, kind in layout.segments
             if kind == "audio"
         )
-        chunk = runtime.settings.projection_chunk_tokens
+        chunk = runtime.settings.qkv_tile_tokens
         video_rows = _final_rows(
             model, hidden_a, t_emb, video_seg, model.final_layer.video_out, chunk
         )

@@ -6,30 +6,50 @@ import pytest
 import seqattn_core
 import torch
 
+import comfyui_seqattn
 from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
 
 
 def test_seqattn_dependency_version():
-    assert seqattn_core.__version__ == "0.3.0a2"
+    assert seqattn_core.__version__ == "0.3.0a3"
+    assert comfyui_seqattn.__version__ == "0.4.0"
 
 
-def test_settings_validation():
+def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
     runtime_mod.SeqAttnSettings().validate()
-    with pytest.raises(ValueError, match="planner_mode"):
-        runtime_mod.SeqAttnSettings(planner_mode="fixed").validate()
     with pytest.raises(ValueError, match="positive"):
-        runtime_mod.SeqAttnSettings(activation_workspace_mib=0).validate()
+        runtime_mod.SeqAttnSettings(q_chunk_tokens=0).validate()
+
+    config_path = tmp_path / "seqattn.toml"
+    config_path.write_text(
+        "[minimax_h3]\nqkv_tile_tokens = 1024\nmlp_tile_tokens = 512\n"
+    )
+    monkeypatch.setenv("SEQATTN_CONFIG", str(config_path))
+    settings = runtime_mod.SeqAttnSettings.from_config(
+        q_chunk_tokens=3840,
+        kv_chunk_tokens=4096,
+    )
+    assert settings.q_chunk_tokens == 3840
+    assert settings.kv_chunk_tokens == 4096
+    assert settings.qkv_tile_tokens == 1024
+    assert settings.mlp_tile_tokens == 512
 
 
 def test_runtime_clone_isolated_and_clear(monkeypatch):
     created = []
+    created_dit = []
 
     class FakeRunner:
         def __init__(self, plan, attention_config, pipeline_config):
             created.append((plan, attention_config, pipeline_config))
 
+    class FakeDiTRunner:
+        def __init__(self, projected, **kwargs):
+            created_dit.append((projected, kwargs))
+
     monkeypatch.setattr(runtime_mod, "ProjectedAttentionRunner", FakeRunner)
+    monkeypatch.setattr(runtime_mod, "H3DiTRunner", FakeDiTRunner)
     monkeypatch.setattr(runtime_mod, "build_plan", lambda **kwargs: kwargs)
 
     runtime = runtime_mod.SeqAttnRuntime(runtime_mod.SeqAttnSettings())
@@ -49,6 +69,24 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
     ) is first
     assert len(created) == 1
 
+    dit = runtime.dit_runner_for(
+        tokens=257,
+        hidden_features=256,
+        heads=4,
+        head_dim=128,
+        dtype=torch.bfloat16,
+        device=torch.device("cuda:0"),
+    )
+    assert runtime.dit_runner_for(
+        tokens=257,
+        hidden_features=256,
+        heads=4,
+        head_dim=128,
+        dtype=torch.bfloat16,
+        device=torch.device("cuda:0"),
+    ) is dit
+    assert len(created_dit) == 1
+
     clone = runtime.clone()
     assert clone.settings == runtime.settings
     assert clone.cache_size == 0
@@ -57,7 +95,19 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         == runtime.lifetime_refined_conditioning_cache_stats
     )
     assert clone.refined_conditioning_cache_stats["entries"] == 0
-    assert runtime.cache_size == 1
+    assert runtime.cache_size == 2
+    runtime.record_weight_schedule({"event": "root"})
+    clone.record_weight_schedule({"event": "clone"})
+    assert runtime.weight_schedule_records == [
+        {"event": "root"},
+        {"event": "clone"},
+    ]
+    assert clone.weight_schedule_records == runtime.weight_schedule_records
+    clone.clear()
+    assert runtime.weight_schedule_records == [
+        {"event": "root"},
+        {"event": "clone"},
+    ]
     runtime.clear()
     assert runtime.cache_size == 0
     assert runtime.refined_conditioning_cache_stats["entries"] == 0

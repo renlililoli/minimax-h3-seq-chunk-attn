@@ -1,33 +1,51 @@
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 
 import torch
 from seqattn_core import (
+    H3DiTRunner,
     ProjectedAttentionRunner,
     ProjectionPipelineConfig,
     StreamingAttentionConfig,
     build_plan,
+    load_h3_tile_config,
 )
 
 
 @dataclass(frozen=True)
 class SeqAttnSettings:
-    activation_workspace_mib: int = 1024
+    q_chunk_tokens: int = 5760
     kv_chunk_tokens: int = 4096
-    planner_mode: str = "fit"
-    projection_chunk_tokens: int = 2048
+    qkv_tile_tokens: int = 4096
+    mlp_tile_tokens: int = 4096
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        q_chunk_tokens: int,
+        kv_chunk_tokens: int,
+    ) -> SeqAttnSettings:
+        tiles = load_h3_tile_config()
+        return cls(
+            q_chunk_tokens=int(q_chunk_tokens),
+            kv_chunk_tokens=int(kv_chunk_tokens),
+            qkv_tile_tokens=tiles.qkv_tile_tokens,
+            mlp_tile_tokens=tiles.mlp_tile_tokens,
+        )
 
     def validate(self) -> None:
-        if self.activation_workspace_mib <= 0:
-            raise ValueError("activation_workspace_mib must be positive")
-        if self.kv_chunk_tokens <= 0:
-            raise ValueError("kv_chunk_tokens must be positive")
-        if self.planner_mode != "fit":
-            raise ValueError("only planner_mode='fit' is supported")
-        if self.projection_chunk_tokens <= 0:
-            raise ValueError("projection_chunk_tokens must be positive")
+        for name, value in (
+            ("q_chunk_tokens", self.q_chunk_tokens),
+            ("kv_chunk_tokens", self.kv_chunk_tokens),
+            ("qkv_tile_tokens", self.qkv_tile_tokens),
+            ("mlp_tile_tokens", self.mlp_tile_tokens),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
 
 
 class _SeqAttnRuntimeMetrics:
@@ -95,11 +113,14 @@ class SeqAttnRuntime:
         settings: SeqAttnSettings,
         *,
         _metrics: _SeqAttnRuntimeMetrics | None = None,
+        weight_schedule_records: list[dict] | None = None,
+        weight_schedule_lock: threading.RLock | None = None,
     ):
         settings.validate()
         self.settings = settings
         self.lock = threading.RLock()
         self._runners: dict[tuple, ProjectedAttentionRunner] = {}
+        self._dit_runners: dict[tuple, H3DiTRunner] = {}
         self._refined_conditioning_key: tuple | None = None
         self._refined_conditioning: torch.Tensor | None = None
         self._refined_conditioning_hits = 0
@@ -107,13 +128,26 @@ class SeqAttnRuntime:
         self._refined_conditioning_stores = 0
         self._refined_conditioning_bypasses = 0
         self._metrics = _metrics or _SeqAttnRuntimeMetrics()
+        self._weight_schedule_records = (
+            [] if weight_schedule_records is None else weight_schedule_records
+        )
+        self._weight_schedule_lock = (
+            threading.RLock()
+            if weight_schedule_lock is None
+            else weight_schedule_lock
+        )
 
     def clone(self) -> "SeqAttnRuntime":
-        return SeqAttnRuntime(self.settings, _metrics=self._metrics)
+        return SeqAttnRuntime(
+            self.settings,
+            _metrics=self._metrics,
+            weight_schedule_records=self._weight_schedule_records,
+            weight_schedule_lock=self._weight_schedule_lock,
+        )
 
     @property
     def cache_size(self) -> int:
-        return len(self._runners)
+        return len(self._runners) + len(self._dit_runners)
 
     @property
     def refined_conditioning_cache_stats(self) -> dict[str, int]:
@@ -143,12 +177,22 @@ class SeqAttnRuntime:
     def record_refined_conditioning_forward(self, applicable: bool) -> None:
         self._metrics.record_forward(applicable)
 
+    @property
+    def weight_schedule_records(self) -> list[dict]:
+        with self._weight_schedule_lock:
+            return list(self._weight_schedule_records)
+
+    def record_weight_schedule(self, record: dict) -> None:
+        with self._weight_schedule_lock:
+            self._weight_schedule_records.append(record)
+
     def clear(self) -> None:
         with self.lock:
             stats = self.refined_conditioning_cache_stats
             if any(stats[key] for key in ("hits", "misses", "stores", "bypasses")):
                 self._metrics.record_refined_conditioning_cache_stats(stats)
             self._runners.clear()
+            self._dit_runners.clear()
             self._refined_conditioning_key = None
             self._refined_conditioning = None
             self._refined_conditioning_hits = 0
@@ -217,7 +261,7 @@ class SeqAttnRuntime:
             return runner
 
         attention_config = StreamingAttentionConfig(
-            workspace_budget_bytes=self.settings.activation_workspace_mib * 2**20,
+            q_chunk_tokens=self.settings.q_chunk_tokens,
             kv_chunk_tokens=self.settings.kv_chunk_tokens,
             output_mode="device_consumer",
             backend="auto",
@@ -238,13 +282,79 @@ class SeqAttnRuntime:
             plan,
             attention_config=attention_config,
             pipeline_config=ProjectionPipelineConfig(
-                projection_chunk_tokens=self.settings.projection_chunk_tokens,
+                projection_chunk_tokens=self.settings.qkv_tile_tokens,
                 require_pinned_hidden=True,
                 pin_qkv=True,
                 pin_output=True,
             ),
         )
         self._runners[key] = runner
+        return runner
+
+    def dit_runner_for(
+        self,
+        *,
+        tokens: int,
+        hidden_features: int,
+        heads: int,
+        head_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> H3DiTRunner:
+        device = torch.device(device)
+        enable_nvtx = os.environ.get("SEQATTN_ENABLE_NVTX") == "1"
+        key = (
+            tokens,
+            hidden_features,
+            heads,
+            head_dim,
+            dtype,
+            device.type,
+            device.index,
+            self.settings,
+        )
+        runner = self._dit_runners.get(key)
+        if runner is not None:
+            return runner
+
+        pipeline_config = ProjectionPipelineConfig(
+            projection_chunk_tokens=self.settings.qkv_tile_tokens,
+            require_pinned_hidden=True,
+            pin_qkv=True,
+            pin_output=True,
+            enable_nvtx=enable_nvtx,
+        )
+        attention_config = StreamingAttentionConfig(
+            q_chunk_tokens=self.settings.q_chunk_tokens,
+            kv_chunk_tokens=self.settings.kv_chunk_tokens,
+            output_mode="device_consumer",
+            backend="auto",
+            require_pinned=True,
+            pin_output=True,
+            enable_nvtx=enable_nvtx,
+        )
+        plan = build_plan(
+            q_heads=heads,
+            kv_heads=heads,
+            head_dim=head_dim,
+            dtype=dtype,
+            device=device,
+            max_q_tokens=tokens,
+            max_kv_tokens=tokens,
+            config=attention_config,
+        )
+        projected = ProjectedAttentionRunner(
+            plan,
+            attention_config=attention_config,
+            pipeline_config=pipeline_config,
+        )
+        runner = H3DiTRunner(
+            projected,
+            hidden_features=hidden_features,
+            mlp_chunk_tokens=self.settings.mlp_tile_tokens,
+            num_final_output_buffers=2,
+        )
+        self._dit_runners[key] = runner
         return runner
 
 

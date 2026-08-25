@@ -72,17 +72,15 @@ def _on_model_cleanup(model_patcher):
 def patch_minimax_h3_model(
     model,
     *,
-    activation_workspace_mib: int,
+    q_chunk_tokens: int,
     kv_chunk_tokens: int,
-    planner_mode: str,
 ):
     _diffusion_model(model)
     patched = model.clone()
     runtime = SeqAttnRuntime(
-        SeqAttnSettings(
-            activation_workspace_mib=int(activation_workspace_mib),
+        SeqAttnSettings.from_config(
+            q_chunk_tokens=int(q_chunk_tokens),
             kv_chunk_tokens=int(kv_chunk_tokens),
-            planner_mode=planner_mode,
         )
     )
     patched.model_options.setdefault("transformer_options", {})[STATE_KEY] = runtime
@@ -121,18 +119,17 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
             inputs=[
                 io.Model.Input("model"),
                 io.Int.Input(
-                    "activation_workspace_mib",
-                    default=1024,
-                    min=256,
-                    max=65536,
-                    step=256,
+                    "q_chunk_tokens",
+                    default=5760,
+                    min=128,
+                    max=262144,
+                    step=128,
                 ),
                 io.Combo.Input(
                     "kv_chunk_tokens",
                     options=[2048, 4096, 8192, 16384],
                     default=4096,
                 ),
-                io.Combo.Input("planner_mode", options=["fit"], default="fit"),
                 io.Boolean.Input("enabled", default=True),
             ],
             outputs=[io.Model.Output()],
@@ -142,18 +139,16 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
     def execute(
         cls,
         model: io.Model.Type,
-        activation_workspace_mib: int,
+        q_chunk_tokens: int,
         kv_chunk_tokens: int,
-        planner_mode: str,
         enabled: bool,
     ) -> io.NodeOutput:
         if not enabled:
             return io.NodeOutput(model)
         patched = patch_minimax_h3_model(
             model,
-            activation_workspace_mib=activation_workspace_mib,
+            q_chunk_tokens=q_chunk_tokens,
             kv_chunk_tokens=kv_chunk_tokens,
-            planner_mode=planner_mode,
         )
         return io.NodeOutput(patched)
 

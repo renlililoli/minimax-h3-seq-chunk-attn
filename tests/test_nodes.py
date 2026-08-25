@@ -91,9 +91,8 @@ def test_model_type_validation():
     with pytest.raises(TypeError, match="MiniMaxH3Model"):
         nodes.patch_minimax_h3_model(
             FakePatcher(object()),
-            activation_workspace_mib=4096,
+            q_chunk_tokens=4096,
             kv_chunk_tokens=4096,
-            planner_mode="fit",
         )
 
 
@@ -102,15 +101,13 @@ def test_patch_is_clone_isolated_and_idempotent():
     original = FakePatcher(diffusion_model)
     first = nodes.patch_minimax_h3_model(
         original,
-        activation_workspace_mib=4096,
+        q_chunk_tokens=4096,
         kv_chunk_tokens=4096,
-        planner_mode="fit",
     )
     second = nodes.patch_minimax_h3_model(
         first,
-        activation_workspace_mib=2048,
+        q_chunk_tokens=2048,
         kv_chunk_tokens=8192,
-        planner_mode="fit",
     )
 
     assert nodes.STATE_KEY not in original.model_options["transformer_options"]
@@ -121,15 +118,14 @@ def test_patch_is_clone_isolated_and_idempotent():
     first_runtime = first.model_options["transformer_options"][nodes.STATE_KEY]
     second_runtime = second.model_options["transformer_options"][nodes.STATE_KEY]
     assert first_runtime is not second_runtime
-    assert second_runtime.settings.activation_workspace_mib == 2048
+    assert second_runtime.settings.q_chunk_tokens == 2048
 
 
 def test_clone_and_cleanup_callbacks_manage_runtime():
     patched = nodes.patch_minimax_h3_model(
         FakePatcher(object.__new__(MiniMaxH3Model)),
-        activation_workspace_mib=4096,
+        q_chunk_tokens=4096,
         kv_chunk_tokens=4096,
-        planner_mode="fit",
     )
     cloned = patched.clone()
     runtime = patched.model_options["transformer_options"][nodes.STATE_KEY]
