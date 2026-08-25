@@ -16,18 +16,84 @@ import time
 import traceback
 from collections import Counter
 from datetime import datetime, timezone
-from fractions import Fraction
 from pathlib import Path
-
-import av
-import numpy as np
-import torch
-from PIL import Image
 
 try:
     import pynvml
 except ImportError:  # pragma: no cover - ComfyUI images normally include it
     pynvml = None
+
+DEFAULT_TARGET_VRAM_MIB = 8192
+DEFAULT_RESERVE_VRAM_GIB = 3.0
+DEFAULT_AIMDO_WATERMARK_MARGIN_MIB = 2560.0
+VRAM_BUDGET_SAFETY_MIB = 384
+
+
+def initialize_aimdo_before_torch(argv: list[str]) -> float | None:
+    if "-h" in argv or "--help" in argv:
+        return None
+    if pynvml is None:
+        raise RuntimeError(
+            "pynvml is required to initialize DynamicVRAM before torch"
+        )
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--target-vram-mib", type=int, default=DEFAULT_TARGET_VRAM_MIB
+    )
+    parser.add_argument(
+        "--reserve-vram-gib", type=float, default=DEFAULT_RESERVE_VRAM_GIB
+    )
+    parser.add_argument(
+        "--aimdo-watermark-margin-mib",
+        type=float,
+        default=DEFAULT_AIMDO_WATERMARK_MARGIN_MIB,
+    )
+    args, _ = parser.parse_known_args(argv)
+
+    pynvml.nvmlInit()
+    index = int(os.environ.get("SEQATTN_EXAMPLE_NVML_GPU_INDEX", "0"))
+    handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+    total_mib = pynvml.nvmlDeviceGetMemoryInfo(handle).total / 2**20
+    requested_reserve_mib = args.reserve_vram_gib * 1024.0
+    target_derived_headroom_mib = max(
+        0.0,
+        total_mib
+        - args.target_vram_mib
+        + VRAM_BUDGET_SAFETY_MIB
+        + args.aimdo_watermark_margin_mib,
+    )
+    effective_headroom_mib = max(
+        requested_reserve_mib, target_derived_headroom_mib
+    )
+
+    import comfy_aimdo.control as aimdo_control
+
+    headroom_bytes = int(effective_headroom_mib * 2**20)
+    try:
+        initialized = aimdo_control.init(
+            simple_vram_headroom=headroom_bytes,
+            nvml_pressure=True,
+        )
+    except TypeError:
+        initialized = aimdo_control.init(simple_vram_headroom=headroom_bytes)
+    if not initialized:
+        raise RuntimeError(
+            "ComfyUI DynamicVRAM control initialization failed before torch import"
+        )
+    return effective_headroom_mib
+
+
+EARLY_AIMDO_HEADROOM_MIB = (
+    initialize_aimdo_before_torch(sys.argv[1:])
+    if __name__ == "__main__"
+    else None
+)
+
+import av  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from PIL import Image  # noqa: E402
 
 
 def release_unused_host_memory() -> None:
@@ -46,6 +112,7 @@ def release_unused_host_memory() -> None:
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+SUPPORTED_COMFYUI_COMMIT = "9a9fdb10ed144ce760d9682cb247526ea23cc525"
 ASSET_ROOT = PACKAGE_ROOT / "assets" / "benchmark"
 
 SCENARIOS = {
@@ -123,11 +190,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int)
     parser.add_argument("--steps", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--target-vram-mib", type=int, default=8192)
+    parser.add_argument(
+        "--target-vram-mib", type=int, default=DEFAULT_TARGET_VRAM_MIB
+    )
     parser.add_argument(
         "--reserve-vram-gib",
         type=float,
-        default=3.0,
+        default=DEFAULT_RESERVE_VRAM_GIB,
         help=(
             "Minimum ComfyUI/AIMDO reserve. The effective reserve is raised "
             "as needed to keep process VRAM under --target-vram-mib."
@@ -136,7 +205,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--aimdo-watermark-margin-mib",
         type=float,
-        default=2560.0,
+        default=DEFAULT_AIMDO_WATERMARK_MARGIN_MIB,
         help="Additional reserve for transient DynamicVRAM fault batches.",
     )
     parser.add_argument("--sample-interval-ms", type=float, default=50.0)
@@ -198,8 +267,35 @@ def atomic_write_json_gz(path: Path, payload) -> None:
 
 
 def git_revision(path: Path) -> str:
+    repository = path.resolve()
+    top_level = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={repository}",
+            "-C",
+            str(repository),
+            "rev-parse",
+            "--show-toplevel",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if top_level.returncode != 0:
+        return "unknown"
+    if Path(top_level.stdout.strip()).resolve() != repository:
+        return "unknown"
     completed = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        [
+            "git",
+            "-c",
+            f"safe.directory={repository}",
+            "-C",
+            str(repository),
+            "rev-parse",
+            "HEAD",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -330,7 +426,7 @@ def initialize_vram_budget(target_mib: int) -> dict:
         for process in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
             if process.pid == os.getpid() and process.usedGpuMemory is not None:
                 context_mib += float(process.usedGpuMemory) / 2**20
-    safety_mib = 384
+    safety_mib = VRAM_BUDGET_SAFETY_MIB
     allocator_limit_mib = target_mib - context_mib - safety_mib
     if allocator_limit_mib <= 0:
         raise RuntimeError("CUDA context leaves no memory under target")
@@ -516,6 +612,12 @@ def main() -> int:
     original_cwd = Path.cwd()
     exit_code = 0
     try:
+        actual_comfyui_commit = result["environment"]["comfyui_commit"]
+        if actual_comfyui_commit != SUPPORTED_COMFYUI_COMMIT:
+            raise RuntimeError(
+                "MiniMax H3 SeqAttn examples require ComfyUI commit "
+                f"{SUPPORTED_COMFYUI_COMMIT}; found {actual_comfyui_commit}"
+            )
         budget = initialize_vram_budget(args.target_vram_mib)
         requested_reserve_mib = args.reserve_vram_gib * 1024.0
         aimdo_watermark_margin_mib = args.aimdo_watermark_margin_mib
@@ -529,7 +631,6 @@ def main() -> int:
         effective_headroom_mib = max(
             requested_reserve_mib, target_derived_headroom_mib
         )
-        effective_headroom_bytes = int(effective_headroom_mib * 2**20)
         result["memory_budget"] = budget
         result["memory_budget"].update(
             {
@@ -555,11 +656,11 @@ def main() -> int:
         sys.path.insert(0, str(comfyui_dir))
         os.chdir(comfyui_dir)
 
-        import nodes as comfy_nodes
         import comfy.memory_management as memory_management
         import comfy.model_management as model_management
         import comfy.model_patcher as model_patcher
         import comfy_aimdo.control as aimdo_control
+        import nodes as comfy_nodes
         from comfy.ldm.minimax.model import PackedLayout
         from comfy_extras.nodes_audio import VAEDecodeAudio
         from comfy_extras.nodes_custom_sampler import (
@@ -571,9 +672,10 @@ def main() -> int:
         )
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
         from comfy_extras.nodes_video import CreateVideo
+
         from comfyui_seqattn.nodes import (
-            MiniMaxH3ReferenceToVideoSeqAttn,
             STATE_KEY,
+            MiniMaxH3ReferenceToVideoSeqAttn,
             patch_minimax_h3_model,
         )
         from comfyui_seqattn.qwen import (
@@ -582,18 +684,17 @@ def main() -> int:
         )
         from comfyui_seqattn.vae import patch_minimax_h3_video_vae
 
+        if EARLY_AIMDO_HEADROOM_MIB is None:
+            raise RuntimeError(
+                "run the example as a script so DynamicVRAM initializes "
+                "before torch import"
+            )
+        if abs(EARLY_AIMDO_HEADROOM_MIB - effective_headroom_mib) > 1.0:
+            raise RuntimeError(
+                "DynamicVRAM early headroom does not match the runtime budget"
+            )
+
         devices = model_management.get_all_torch_devices()
-        try:
-            aimdo_control_initialized = aimdo_control.init(
-                simple_vram_headroom=effective_headroom_bytes,
-                nvml_pressure=True,
-            )
-        except TypeError:
-            aimdo_control_initialized = aimdo_control.init(
-                simple_vram_headroom=effective_headroom_bytes
-            )
-        if not aimdo_control_initialized:
-            raise RuntimeError("ComfyUI DynamicVRAM control initialization failed")
         try:
             aimdo_devices_initialized = aimdo_control.init_devices(
                 (device.index, 0) for device in devices
@@ -670,8 +771,8 @@ def main() -> int:
         qwen_controller = getattr(clip, QWEN_STATE_KEY)
         original_preflight = qwen_controller.preflight
 
-        def recording_preflight(tokens):
-            plan = original_preflight(tokens)
+        def recording_preflight(tokens, _original_preflight=original_preflight):
+            plan = _original_preflight(tokens)
             result["qwen_preflight"] = plan
             return plan
 
@@ -702,26 +803,30 @@ def main() -> int:
             conditioning_inputs["ref_videos"] = {"ref_video_0": reference}
             result["inputs"] = {"ref_video": metadata}
 
-        def create_conditioning():
+        def create_conditioning(
+            _clip=clip,
+            _video_vae=video_vae,
+            _conditioning_inputs=conditioning_inputs,
+        ):
             if args.scenario in {"t2va", "fl2va"}:
                 return MiniMaxH3ImageToVideo.execute(
-                    clip,
-                    video_vae,
+                    _clip,
+                    _video_vae,
                     prompt,
                     width,
                     height,
                     frames,
-                    **conditioning_inputs,
+                    **_conditioning_inputs,
                 ).result
             return MiniMaxH3ReferenceToVideoSeqAttn.execute(
-                clip,
-                video_vae,
+                _clip,
+                _video_vae,
                 None,
                 prompt,
                 width,
                 height,
                 frames,
-                **conditioning_inputs,
+                **_conditioning_inputs,
             ).result
 
         positive, latent = phase("conditioning", create_conditioning)
@@ -801,8 +906,8 @@ def main() -> int:
         try:
             sampled, _ = phase(
                 "denoise",
-                lambda: SamplerCustomAdvanced.execute(
-                    noise, guider, sampler_object, sigmas, latent
+                lambda _guider=guider, _latent=latent: SamplerCustomAdvanced.execute(
+                    noise, _guider, sampler_object, sigmas, _latent
                 ).result,
             )
         finally:
@@ -836,7 +941,12 @@ def main() -> int:
         video_vae = patch_minimax_h3_video_vae(
             video_vae, tile_size=192, workspace_mib=512
         )
-        decoded = phase("video_decode", lambda: video_vae.decode(video_latent))
+        decoded = phase(
+            "video_decode",
+            lambda _video_vae=video_vae, _video_latent=video_latent: (
+                _video_vae.decode(_video_latent)
+            ),
+        )
         if decoded.ndim == 5:
             decoded = decoded[0]
 

@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+/docker/.env
 
 # Local leftovers from the development worktree are not part of this branch.
 /comfyui_custom_nodes/

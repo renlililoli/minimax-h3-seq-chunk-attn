@@ -13,7 +13,7 @@ from comfyui_seqattn import runtime as runtime_mod
 
 def test_seqattn_dependency_version():
     assert seqattn_core.__version__ == "0.3.0a3"
-    assert comfyui_seqattn.__version__ == "0.4.0"
+    assert comfyui_seqattn.__version__ == "0.4.1"
 
 
 def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):

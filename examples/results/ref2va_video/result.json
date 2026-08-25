@@ -48,13 +48,13 @@
     "cuda": "12.8",
     "cuda_visible_devices": null,
     "gpu": "NVIDIA GeForce RTX 5090",
-    "hostname": "0b52c552aec8",
-    "package_commit": "105600c36b92c80699c9646522089389efa7ae98",
+    "hostname": "b0f1571e61d2",
+    "package_commit": "unknown",
     "package_root": "/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn",
     "python": "3.12.3",
     "torch": "2.10.0+cu128"
   },
-  "finished_at_utc": "2026-08-25T11:59:44.733711+00:00",
+  "finished_at_utc": "2026-08-25T14:00:48.711302+00:00",
   "inputs": {
     "ref_video": {
       "frames": 124,
@@ -65,11 +65,11 @@
     }
   },
   "memory": {
-    "cpu_rss_peak_mib": 32608.28515625,
+    "cpu_rss_peak_mib": 32640.60546875,
     "nvml_process_peak_mib": 7708.0,
-    "sample_count": 28649,
+    "sample_count": 28667,
     "sample_interval_ms": 20.0,
-    "trace_path": "/results/memory_trace.csv.gz"
+    "trace_path": "/results/ref2va_video/memory_trace.csv.gz"
   },
   "memory_budget": {
     "aimdo_device_extra_headroom_mib": 0.0,
@@ -88,7 +88,7 @@
   "output": {
     "audio_sample_rate": 32000,
     "fps": 24,
-    "path": "/results/output.mp4",
+    "path": "/results/ref2va_video/output.mp4",
     "probe": {
       "audio": {
         "channels": 2,
@@ -155,112 +155,112 @@
   },
   "phases": [
     {
-      "cpu_rss_peak_mib": 1344.9453125,
-      "end_elapsed_ms": 15604.612470138818,
+      "cpu_rss_peak_mib": 1334.3671875,
+      "end_elapsed_ms": 10795.687689911574,
       "name": "video_vae_load",
       "nvml_process_peak_mib": 500.0,
       "sample_count": 6,
-      "seconds": 0.11897914204746485,
-      "start_elapsed_ms": 15485.633328091353
+      "seconds": 0.1220036125741899,
+      "start_elapsed_ms": 10673.684077337384
     },
     {
-      "cpu_rss_peak_mib": 3950.2734375,
-      "end_elapsed_ms": 16386.320592835546,
+      "cpu_rss_peak_mib": 3917.9140625,
+      "end_elapsed_ms": 11576.875490136445,
       "name": "qwen_load",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 15,
-      "seconds": 0.7797238030470908,
-      "start_elapsed_ms": 15606.596789788455
+      "sample_count": 13,
+      "seconds": 0.7792640868574381,
+      "start_elapsed_ms": 10797.611403279006
     },
     {
-      "cpu_rss_peak_mib": 6209.27734375,
-      "end_elapsed_ms": 17053.62014612183,
+      "cpu_rss_peak_mib": 6147.2890625,
+      "end_elapsed_ms": 12274.61569197476,
       "name": "reference_video_decode",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 26,
-      "seconds": 0.6540371109731495,
-      "start_elapsed_ms": 16399.58303514868
+      "sample_count": 28,
+      "seconds": 0.6843430707231164,
+      "start_elapsed_ms": 11590.272621251643
     },
     {
-      "cpu_rss_peak_mib": 26176.453125,
-      "end_elapsed_ms": 177878.17757576704,
+      "cpu_rss_peak_mib": 26187.4609375,
+      "end_elapsed_ms": 173093.71605096385,
       "name": "conditioning",
       "nvml_process_peak_mib": 7708.0,
-      "sample_count": 7621,
-      "seconds": 160.82435416290537,
-      "start_elapsed_ms": 17053.823412861675
+      "sample_count": 7634,
+      "seconds": 160.81895324075595,
+      "start_elapsed_ms": 12274.762810207903
     },
     {
-      "cpu_rss_peak_mib": 5468.7421875,
-      "end_elapsed_ms": 180176.82463675737,
+      "cpu_rss_peak_mib": 5485.95703125,
+      "end_elapsed_ms": 175268.8783700578,
       "name": "diffusion_model_load",
       "nvml_process_peak_mib": 884.0,
       "sample_count": 5,
-      "seconds": 0.0973425917327404,
-      "start_elapsed_ms": 180079.48204502463
+      "seconds": 0.09680880000814795,
+      "start_elapsed_ms": 175172.06957004964
     },
     {
-      "cpu_rss_peak_mib": 32608.28515625,
-      "end_elapsed_ms": 532371.364295017,
+      "cpu_rss_peak_mib": 32640.60546875,
+      "end_elapsed_ms": 529624.3216032162,
       "name": "denoise",
       "nvml_process_peak_mib": 4386.0,
-      "sample_count": 16467,
-      "seconds": 352.1838168608956,
-      "start_elapsed_ms": 180187.54743412137
+      "sample_count": 16677,
+      "seconds": 354.3455403698608,
+      "start_elapsed_ms": 175278.7812333554
     },
     {
-      "cpu_rss_peak_mib": 4564.06640625,
-      "end_elapsed_ms": 537509.9468729459,
+      "cpu_rss_peak_mib": 4603.77734375,
+      "end_elapsed_ms": 534760.4272449389,
       "name": "video_vae_reload",
       "nvml_process_peak_mib": 1492.0,
       "sample_count": 6,
-      "seconds": 0.13844378013163805,
-      "start_elapsed_ms": 537371.5030928142
+      "seconds": 0.1388586638495326,
+      "start_elapsed_ms": 534621.5685810894
     },
     {
-      "cpu_rss_peak_mib": 10611.2890625,
-      "end_elapsed_ms": 600269.6638307534,
+      "cpu_rss_peak_mib": 10626.98828125,
+      "end_elapsed_ms": 597948.541409336,
       "name": "video_decode",
       "nvml_process_peak_mib": 6002.0,
-      "sample_count": 2953,
-      "seconds": 62.75250171497464,
-      "start_elapsed_ms": 537517.1621157788
+      "sample_count": 3017,
+      "seconds": 63.179647357203066,
+      "start_elapsed_ms": 534768.894052133
     },
     {
-      "cpu_rss_peak_mib": 5720.2421875,
-      "end_elapsed_ms": 601145.6627277657,
+      "cpu_rss_peak_mib": 5735.58203125,
+      "end_elapsed_ms": 598650.1501011662,
       "name": "audio_vae_load",
       "nvml_process_peak_mib": 1492.0,
       "sample_count": 4,
-      "seconds": 0.08199533773586154,
-      "start_elapsed_ms": 601063.6673900299
+      "seconds": 0.07355410186573863,
+      "start_elapsed_ms": 598576.5959993005
     },
     {
-      "cpu_rss_peak_mib": 6121.05859375,
-      "end_elapsed_ms": 607898.6874767579,
+      "cpu_rss_peak_mib": 6146.89453125,
+      "end_elapsed_ms": 605370.5407902598,
       "name": "audio_decode",
       "nvml_process_peak_mib": 1492.0,
-      "sample_count": 319,
-      "seconds": 6.747406350914389,
-      "start_elapsed_ms": 601151.2811258435
+      "sample_count": 316,
+      "seconds": 6.714749576058239,
+      "start_elapsed_ms": 598655.7912142016
     },
     {
-      "cpu_rss_peak_mib": 6208.91015625,
-      "end_elapsed_ms": 613882.4555128813,
+      "cpu_rss_peak_mib": 6223.19140625,
+      "end_elapsed_ms": 611351.4206400141,
       "name": "media_write",
       "nvml_process_peak_mib": 1492.0,
-      "sample_count": 232,
-      "seconds": 5.97414425201714,
-      "start_elapsed_ms": 607908.3112608641
+      "sample_count": 222,
+      "seconds": 5.969638424925506,
+      "start_elapsed_ms": 605381.7822150886
     },
     {
-      "cpu_rss_peak_mib": 6011.22265625,
-      "end_elapsed_ms": 614005.7573551312,
+      "cpu_rss_peak_mib": 6026.57421875,
+      "end_elapsed_ms": 611468.6741349287,
       "name": "media_probe",
       "nvml_process_peak_mib": 1492.0,
-      "sample_count": 6,
-      "seconds": 0.11570287309587002,
-      "start_elapsed_ms": 613890.0544820353
+      "sample_count": 5,
+      "seconds": 0.11083789775148034,
+      "start_elapsed_ms": 611357.8362371773
     }
   ],
   "qwen_preflight": {
@@ -294,8 +294,8 @@
     },
     "forward_count": 2,
     "max_staged_blocks": 2,
-    "path": "/results/weight_schedule.json.gz",
-    "ready_blocked_seconds": 0.010507230181246996,
+    "path": "/results/ref2va_video/weight_schedule.json.gz",
+    "ready_blocked_seconds": 0.01066816970705986,
     "record_count": 500,
     "settings": {
       "kv_chunk_tokens": 4096,
@@ -305,7 +305,7 @@
     },
     "vbar_loaded_peak_mib": 320.0
   },
-  "started_at_utc": "2026-08-25T11:49:30.177639+00:00",
+  "started_at_utc": "2026-08-25T13:50:36.721424+00:00",
   "status": "success",
   "upstream_refiner": {
     "condition_proj": 1,

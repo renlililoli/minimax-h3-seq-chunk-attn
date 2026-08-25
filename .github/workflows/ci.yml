@@ -7,10 +7,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        comfyui-version: [v0.30.0, v0.30.2]
+    env:
+      COMFYUI_COMMIT: 9a9fdb10ed144ce760d9682cb247526ea23cc525
     steps:
       - uses: actions/checkout@v4
 
@@ -27,8 +25,11 @@ jobs:
 
       - name: Install ComfyUI and test dependencies
         run: |
-          git clone --depth 1 --branch "${{ matrix.comfyui-version }}" \
+          git clone --filter=blob:none --no-checkout \
             https://github.com/Comfy-Org/ComfyUI.git ComfyUI
+          git -C ComfyUI fetch --depth 1 origin "$COMFYUI_COMMIT"
+          git -C ComfyUI checkout --detach "$COMFYUI_COMMIT"
+          test "$(git -C ComfyUI rev-parse HEAD)" = "$COMFYUI_COMMIT"
           python -m pip install -r ComfyUI/requirements.txt
           python -m pip install -e '.[dev]'
 

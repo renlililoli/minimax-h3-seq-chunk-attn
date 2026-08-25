@@ -9,6 +9,7 @@
     ]
   },
   "configuration": {
+    "aimdo_watermark_margin_mib": 2560.0,
     "audio_device": "cpu",
     "frames": 56,
     "height": 768,
@@ -20,40 +21,59 @@
   },
   "denoise": {
     "steps": 2,
-    "torch_peak_allocated_mib": 5224.27294921875,
-    "torch_peak_reserved_mib": 5428.0
+    "torch_peak_allocated_mib": 2274.69091796875,
+    "torch_peak_reserved_mib": 2610.0
   },
   "diffusion_model": {
+    "current_patcher_type": null,
     "hidden_size": 5376,
     "input_conditioning_width": 5120,
+    "is_dynamic": true,
+    "patcher_type": "ModelPatcherDynamic",
     "upstream_refiner_required": true
   },
+  "dynamic_vram": {
+    "aimdo_enabled": true,
+    "core_model_patcher": "ModelPatcherDynamic",
+    "device_extra_headroom_mib": 0.0,
+    "devices": [
+      "cuda:0"
+    ],
+    "devices_initialized": true,
+    "simple_headroom_mib": 27359.0
+  },
   "environment": {
-    "comfyui_commit": "unknown",
+    "comfyui_commit": "9a9fdb10ed144ce760d9682cb247526ea23cc525",
     "comfyui_dir": "/opt/ComfyUI",
     "cuda": "12.8",
     "cuda_visible_devices": null,
     "gpu": "NVIDIA GeForce RTX 5090",
-    "hostname": "8031ae4a3165",
+    "hostname": "d8702a1c82d1",
     "package_commit": "unknown",
-    "package_root": "/workspace",
+    "package_root": "/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn",
     "python": "3.12.3",
     "torch": "2.10.0+cu128"
   },
-  "finished_at_utc": "2026-08-22T02:13:32.415594+00:00",
+  "finished_at_utc": "2026-08-25T14:19:19.271677+00:00",
   "memory": {
-    "cpu_rss_peak_mib": 46773.546875,
-    "nvml_process_peak_mib": 7344.0,
-    "sample_count": 3179,
-    "sample_interval_ms": 50.0,
+    "cpu_rss_peak_mib": 23714.75,
+    "nvml_process_peak_mib": 6366.0,
+    "sample_count": 19213,
+    "sample_interval_ms": 20.0,
     "trace_path": "/results/t2va/memory_trace.csv.gz"
   },
   "memory_budget": {
+    "aimdo_device_extra_headroom_mib": 0.0,
+    "aimdo_watermark_margin_mib": 2560.0,
     "allocator_fraction": 0.2275860055471753,
     "allocator_limit_mib": 7308.0,
     "context_mib": 500.0,
+    "effective_aimdo_headroom_mib": 27359.0,
+    "nvml_total_mib": 32607.0,
     "physical_mib": 32110.9375,
+    "requested_reserve_mib": 3072.0,
     "safety_mib": 384,
+    "target_derived_aimdo_headroom_mib": 27359.0,
     "target_mib": 8192
   },
   "output": {
@@ -76,7 +96,7 @@
         "width": 1344
       }
     },
-    "size_bytes": 635944,
+    "size_bytes": 636719,
     "video_shape": [
       56,
       768,
@@ -121,74 +141,103 @@
   },
   "phases": [
     {
-      "cpu_rss_peak_mib": 10483.3828125,
+      "cpu_rss_peak_mib": 1341.12109375,
+      "end_elapsed_ms": 13949.407548177987,
       "name": "video_vae_load",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 66,
-      "seconds": 3.652518823975697
+      "sample_count": 7,
+      "seconds": 0.13553352374583483,
+      "start_elapsed_ms": 13813.874024432153
     },
     {
-      "cpu_rss_peak_mib": 8702.48828125,
+      "cpu_rss_peak_mib": 4030.09765625,
+      "end_elapsed_ms": 14762.198142241687,
       "name": "qwen_load",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 7,
-      "seconds": 0.8139346991665661
+      "sample_count": 17,
+      "seconds": 0.8108573271892965,
+      "start_elapsed_ms": 13951.34081505239
     },
     {
-      "cpu_rss_peak_mib": 23277.88671875,
+      "cpu_rss_peak_mib": 18807.38671875,
+      "end_elapsed_ms": 132185.95820618793,
       "name": "conditioning",
-      "nvml_process_peak_mib": 2582.0,
-      "sample_count": 276,
-      "seconds": 14.53838076791726
+      "nvml_process_peak_mib": 6366.0,
+      "sample_count": 5564,
+      "seconds": 117.41117616184056,
+      "start_elapsed_ms": 14774.782044347376
     },
     {
-      "cpu_rss_peak_mib": 23653.23046875,
+      "cpu_rss_peak_mib": 3542.203125,
+      "end_elapsed_ms": 135211.3162712194,
       "name": "diffusion_model_load",
-      "nvml_process_peak_mib": 1558.0,
-      "sample_count": 2,
-      "seconds": 0.10438614408485591
+      "nvml_process_peak_mib": 880.0,
+      "sample_count": 60,
+      "seconds": 1.2564054909162223,
+      "start_elapsed_ms": 133954.91078030318
     },
     {
-      "cpu_rss_peak_mib": 44939.16796875,
+      "cpu_rss_peak_mib": 23714.75,
+      "end_elapsed_ms": 349044.0693204291,
       "name": "denoise",
-      "nvml_process_peak_mib": 6126.0,
-      "sample_count": 1961,
-      "seconds": 101.295584294945
+      "nvml_process_peak_mib": 4154.0,
+      "sample_count": 10066,
+      "seconds": 213.82304214732721,
+      "start_elapsed_ms": 135221.0271731019
     },
     {
-      "cpu_rss_peak_mib": 44946.80859375,
-      "name": "video_decode",
-      "nvml_process_peak_mib": 7344.0,
-      "sample_count": 423,
-      "seconds": 21.808791876072064
-    },
-    {
-      "cpu_rss_peak_mib": 46696.09765625,
-      "name": "audio_vae_load",
-      "nvml_process_peak_mib": 3302.0,
+      "cpu_rss_peak_mib": 2649.16015625,
+      "end_elapsed_ms": 352601.8011481501,
+      "name": "video_vae_reload",
+      "nvml_process_peak_mib": 1492.0,
       "sample_count": 5,
-      "seconds": 0.3024925128556788
+      "seconds": 0.13867613673210144,
+      "start_elapsed_ms": 352463.125011418
     },
     {
-      "cpu_rss_peak_mib": 46606.64453125,
+      "cpu_rss_peak_mib": 8128.109375,
+      "end_elapsed_ms": 403953.2071170397,
+      "name": "video_decode",
+      "nvml_process_peak_mib": 5880.0,
+      "sample_count": 2423,
+      "seconds": 51.34523961972445,
+      "start_elapsed_ms": 352607.96749731526
+    },
+    {
+      "cpu_rss_peak_mib": 3266.4453125,
+      "end_elapsed_ms": 404641.8948462233,
+      "name": "audio_vae_load",
+      "nvml_process_peak_mib": 1492.0,
+      "sample_count": 3,
+      "seconds": 0.07216250896453857,
+      "start_elapsed_ms": 404569.73233725876
+    },
+    {
+      "cpu_rss_peak_mib": 3603.76171875,
+      "end_elapsed_ms": 407790.6057923101,
       "name": "audio_decode",
-      "nvml_process_peak_mib": 3302.0,
-      "sample_count": 46,
-      "seconds": 2.339622155064717
+      "nvml_process_peak_mib": 1492.0,
+      "sample_count": 151,
+      "seconds": 3.145227328874171,
+      "start_elapsed_ms": 404645.3784634359
     },
     {
-      "cpu_rss_peak_mib": 46773.546875,
+      "cpu_rss_peak_mib": 3744.34765625,
+      "end_elapsed_ms": 410188.5632253252,
       "name": "media_write",
-      "nvml_process_peak_mib": 3302.0,
-      "sample_count": 41,
-      "seconds": 2.3007514029741287
+      "nvml_process_peak_mib": 1492.0,
+      "sample_count": 86,
+      "seconds": 2.392111197113991,
+      "start_elapsed_ms": 407796.4520282112
     },
     {
-      "cpu_rss_peak_mib": 46648.703125,
+      "cpu_rss_peak_mib": 3564.48828125,
+      "end_elapsed_ms": 410272.5895890035,
       "name": "media_probe",
-      "nvml_process_peak_mib": 3302.0,
-      "sample_count": 2,
-      "seconds": 0.0647571599110961
+      "nvml_process_peak_mib": 1492.0,
+      "sample_count": 4,
+      "seconds": 0.07906741183251143,
+      "start_elapsed_ms": 410193.52217717096
     }
   ],
   "qwen_preflight": {
@@ -212,7 +261,28 @@
     "stores": 0
   },
   "scenario": "t2va",
-  "started_at_utc": "2026-08-22T02:10:46.436496+00:00",
+  "seqattn_weight_schedule": {
+    "event_counts": {
+      "compute_end": 100,
+      "compute_start": 100,
+      "prepare": 100,
+      "ready": 100,
+      "release": 100
+    },
+    "forward_count": 2,
+    "max_staged_blocks": 2,
+    "path": "/results/t2va/weight_schedule.json.gz",
+    "ready_blocked_seconds": 0.01055489107966423,
+    "record_count": 500,
+    "settings": {
+      "kv_chunk_tokens": 4096,
+      "mlp_tile_tokens": 4096,
+      "q_chunk_tokens": 5760,
+      "qkv_tile_tokens": 4096
+    },
+    "vbar_loaded_peak_mib": 320.0
+  },
+  "started_at_utc": "2026-08-25T14:12:28.533563+00:00",
   "status": "success",
   "upstream_refiner": {
     "condition_proj": 1,

@@ -9,6 +9,8 @@ models_dir=${COMFYUI_MODELS_DIR:-}
 output_root=${SEQATTN_EXAMPLE_OUTPUT_DIR:-$example_dir/results}
 scenario_list=${SEQATTN_EXAMPLE_SCENARIOS:-t2va fl2va ref2va_images ref2va_video}
 install_dir=/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn
+cpuset_cpus=${SEQATTN_EXAMPLE_CPUSET_CPUS:-}
+cpuset_mems=${SEQATTN_EXAMPLE_CPUSET_MEMS:-}
 
 if [[ -z "$models_dir" ]]; then
   echo "set COMFYUI_MODELS_DIR to a directory containing diffusion_models/, text_encoders/, and vae/" >&2
@@ -39,26 +41,45 @@ done
 
 for scenario in $scenario_list; do
   mkdir -p "$output_root/$scenario"
-  docker run --rm \
-    --gpus "device=$gpu" \
-    --ipc host \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -e USER=seqattn \
-    -e LOGNAME=seqattn \
-    -e XDG_CACHE_HOME=/tmp/.cache \
-    -e TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
-    -e PYTHONDONTWRITEBYTECODE=1 \
-    -e PYTORCH_ALLOC_CONF=expandable_segments:True \
-    -e MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" \
-    -e MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-131072}" \
-    -e MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-0}" \
-    -e SEQATTN_EXAMPLE_NVML_GPU_INDEX=0 \
-    -v "$package_root:$install_dir:ro" \
-    -v "$models_dir:/opt/ComfyUI/models:ro" \
-    -v "$output_root:/results" \
+  docker_args=(
+    --rm
+    --gpus "device=$gpu"
+    --ipc host
+    --user "$(id -u):$(id -g)"
+    -e HOME=/tmp
+    -e USER=seqattn
+    -e LOGNAME=seqattn
+    -e XDG_CACHE_HOME=/tmp/.cache
+    -e TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor
+    -e PYTHONDONTWRITEBYTECODE=1
+    -e PYTORCH_ALLOC_CONF=expandable_segments:True
+    -e MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+    -e MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-131072}"
+    -e MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-0}"
+    -e SEQATTN_EXAMPLE_NVML_GPU_INDEX=0
+    -v "$package_root:$install_dir:ro"
+    -v "$models_dir:/opt/ComfyUI/models:ro"
+    -v "$output_root:/results"
+  )
+  if [[ -n "$cpuset_cpus" ]]; then
+    docker_args+=(--cpuset-cpus "$cpuset_cpus")
+  fi
+  if [[ -n "$cpuset_mems" ]]; then
+    docker_args+=(--cpuset-mems "$cpuset_mems")
+  fi
+  docker run "${docker_args[@]}" \
     "$image" \
-    python "$install_dir/examples/run_2step_example.py" \
+    bash -lc '
+      set -euo pipefail
+      install_dir=$1
+      shift
+      python "$install_dir/examples/install_clean_dependencies.py" \
+        --package-root "$install_dir" \
+        --target /tmp/seqattn-example-site
+      export PYTHONPATH=/tmp/seqattn-example-site${PYTHONPATH:+:$PYTHONPATH}
+      exec python "$@"
+    ' bash "$install_dir" \
+      "$install_dir/examples/run_2step_example.py" \
       --scenario "$scenario" \
       --comfyui-dir /opt/ComfyUI \
       --output-dir "/results/$scenario" \

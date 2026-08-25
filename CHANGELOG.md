@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1 - 2026-08-25
+
+- Pin the supported ComfyUI runtime to version `0.30.0`, exact validation
+  commit `9a9fdb10ed144ce760d9682cb247526ea23cc525`, across package metadata,
+  CI, documentation, and end-to-end examples.
+- Avoid importing the removed `time_shift_slope` helper unconditionally and
+  preserve both MiniMax-H3 audio velocity contracts for future compatibility
+  work, without claiming support beyond the pinned ComfyUI baseline.
+- Regenerate the T2VA, FL2VA, image-reference Ref2VA, and video-reference
+  Ref2VA examples from clean installs, including media, memory traces, and
+  fused weight-scheduler traces.
+
 ## 0.4.0 - 2026-08-25
 
 - Replace the old split MiniMax-H3 denoise path with the fused block runtime

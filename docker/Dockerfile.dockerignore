@@ -1,0 +1,16 @@
+**
+!__init__.py
+!pyproject.toml
+!README.md
+!CHANGELOG.md
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!comfyui_seqattn/**
+!workflows/**
+!examples/**
+!docker/entrypoint.sh
+!docker/check.sh
+!docker/seqattn.toml
+examples/results/**
+**/__pycache__/**
+**/*.pyc

@@ -9,6 +9,38 @@ from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
 
 
+@pytest.fixture
+def resident_weight_stream(monkeypatch):
+    class ResidentWeightState:
+        def __init__(self, index):
+            self.index = index
+
+    class ResidentWeightStreamer:
+        def __init__(self, blocks, device, *, record=None):
+            del device, record
+            self.blocks = blocks
+
+        def prepare(self, index):
+            return ResidentWeightState(index)
+
+        def wait_ready(self, state):
+            del state
+
+        def compute_start(self, state):
+            del state
+
+        def compute_end(self, state):
+            del state
+
+        def release(self, state):
+            del state
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(streaming, "BlockWeightStreamer", ResidentWeightStreamer)
+
+
 def _tiny_model(
     device,
     *,
@@ -58,9 +90,29 @@ def _assert_outputs_close(actual, expected):
         assert cosine.item() >= 0.999
 
 
+def test_audio_velocity_supports_old_and_new_comfyui_contracts(monkeypatch):
+    audio_rows = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+    audio_x = torch.empty((1, 3, 2, 2), dtype=torch.bfloat16)
+    sigma_v = torch.tensor(0.5)
+    expected_raw = -streaming.unpack_audio(audio_rows).to(audio_x.dtype)
+
+    monkeypatch.delattr(streaming.native_minimax, "time_shift_slope", raising=False)
+    actual_new = streaming._audio_velocity(audio_rows, audio_x, sigma_v, 12.0, 3.0)
+    torch.testing.assert_close(actual_new, expected_raw)
+
+    monkeypatch.setattr(
+        streaming.native_minimax,
+        "time_shift_slope",
+        lambda *_args: torch.tensor(2.0),
+        raising=False,
+    )
+    actual_old = streaming._audio_velocity(audio_rows, audio_x, sigma_v, 12.0, 3.0)
+    torch.testing.assert_close(actual_old, expected_raw * 2.0)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @torch.inference_mode()
-def test_one_block_native_streaming_parity():
+def test_one_block_native_streaming_parity(resident_weight_stream):
     torch.manual_seed(7)
     device = torch.device("cuda")
     model = _tiny_model(device)
@@ -95,7 +147,9 @@ def test_one_block_native_streaming_parity():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @torch.inference_mode()
-def test_refined_conditioning_cached_across_denoising_calls():
+def test_refined_conditioning_cached_across_denoising_calls(
+    resident_weight_stream,
+):
     torch.manual_seed(9)
     device = torch.device("cuda")
     model = _tiny_model(
@@ -230,7 +284,9 @@ def test_refined_conditioning_cached_across_denoising_calls():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @torch.inference_mode()
-def test_curve_adaln_t2va_fl2va_and_ref2va_layout_parity():
+def test_curve_adaln_t2va_fl2va_and_ref2va_layout_parity(
+    resident_weight_stream,
+):
     torch.manual_seed(11)
     device = torch.device("cuda")
     model = _tiny_model(device, use_curves=True)
@@ -312,7 +368,7 @@ def test_curve_adaln_t2va_fl2va_and_ref2va_layout_parity():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @torch.inference_mode()
-def test_full_50_block_tiny_forward_parity():
+def test_full_50_block_tiny_forward_parity(resident_weight_stream):
     torch.manual_seed(29)
     device = torch.device("cuda")
     model = _tiny_model(device, num_layers=50)

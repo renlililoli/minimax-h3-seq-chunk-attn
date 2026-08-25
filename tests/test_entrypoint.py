@@ -5,6 +5,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,3 +50,20 @@ def test_repository_root_is_a_comfyui_v3_extension():
 def test_repository_root_supports_top_level_import():
     module = _load_repository_entrypoint_without_package_context()
     assert callable(module.comfy_entrypoint)
+
+
+def test_repository_entrypoint_rejects_other_comfyui_versions(monkeypatch):
+    module = _load_repository_entrypoint()
+    monkeypatch.setattr("comfyui_version.__version__", "0.33.1")
+
+    with pytest.raises(RuntimeError, match="requires ComfyUI 0.30.0"):
+        asyncio.run(module.comfy_entrypoint())
+
+
+def test_repository_entrypoint_rejects_other_comfyui_commits(monkeypatch):
+    module = _load_repository_entrypoint()
+    monkeypatch.setattr("comfyui_version.__version__", "0.30.0")
+    monkeypatch.setattr(module, "_comfyui_git_commit", lambda _path: "wrong")
+
+    with pytest.raises(RuntimeError, match="requires ComfyUI commit"):
+        asyncio.run(module.comfy_entrypoint())

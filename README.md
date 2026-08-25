@@ -2,7 +2,7 @@
 
 Exact CPU-backed streaming attention for native ComfyUI MiniMax-H3 models.
 
-[![ComfyUI](https://img.shields.io/badge/ComfyUI-%3E%3D%200.30.0-111827)](#requirements)
+[![ComfyUI](https://img.shields.io/badge/ComfyUI-0.30.0%20pinned-111827)](#requirements)
 [![Platform](https://img.shields.io/badge/Linux-NVIDIA%20CUDA-76b900)](#requirements)
 [![Weights](https://img.shields.io/badge/INT8%20DiT-NVFP4%20Text-7c3aed)](#models)
 [![Capacity](https://img.shields.io/badge/81K%20tokens-8%20GiB%20validated-16a34a)](#validated-run)
@@ -23,6 +23,11 @@ Supported layouts: T2VA, FL2VA, and Ref2VA. The current `0.4.0` validation is a
 complete 20-step, 81,180-token Ref2VA run at 1344x768 with 124 output frames.
 Older `0.3.x` measurements are intentionally excluded from the current-version
 tables below.
+
+The supported ComfyUI baseline is fixed to **version `0.30.0`, commit
+`9a9fdb10ed144ce760d9682cb247526ea23cc525`**. Newer ComfyUI releases are not
+part of the `0.4.x` compatibility contract, even if individual code paths may
+continue to work.
 
 ## Validated Run
 
@@ -134,6 +139,10 @@ Search for **MiniMax H3 SeqAttn**, install it, and restart ComfyUI.
 ### Manual
 
 ```bash
+cd /path/to/ComfyUI
+git fetch origin 9a9fdb10ed144ce760d9682cb247526ea23cc525
+git checkout --detach 9a9fdb10ed144ce760d9682cb247526ea23cc525
+
 cd /path/to/ComfyUI/custom_nodes
 git clone --branch community/comfyui-minimax-h3-seqattn \
   https://github.com/renlililoli/minimax-h3-seq-chunk-attn.git \
@@ -147,7 +156,8 @@ No Git submodules are required. Installation resolves the pinned
 
 ## Requirements
 
-- ComfyUI `>= 0.30.0`
+- ComfyUI `0.30.0`, commit
+  `9a9fdb10ed144ce760d9682cb247526ea23cc525`
 - Linux and NVIDIA CUDA
 - Python `>= 3.10`
 - Batch size 1
@@ -157,6 +167,33 @@ The attention and Qwen activation paths use BF16 regardless of checkpoint
 storage precision. The Qwen node requires `CLIPLoader` device `default`. LoRA,
 diffusion-model replacement patches, NVMe activation backing, and multi-GPU
 execution are not currently supported.
+
+The extension rejects other reported ComfyUI versions during entrypoint
+loading with an explicit compatibility error. This avoids silently treating a
+changed internal MiniMax-H3 sampling contract as a supported environment.
+
+For an RTX 50-series container, use the pinned
+[`docker/Dockerfile`](docker/Dockerfile) and
+[`docker/README.md`](docker/README.md). The image starts from the exact
+ComfyUI/PyTorch/CUDA base used by the checked-in examples, verifies the pinned
+ComfyUI commit and DynamicVRAM runtime during the build, and installs this node
+with its fixed `seqattn-core` revision.
+
+### AIMDO Startup Order
+
+Normal Web UI users do not need a separate AIMDO bootstrap. Start the pinned
+ComfyUI checkout through its standard `main.py` entrypoint and leave
+DynamicVRAM enabled. ComfyUI initializes `comfy_aimdo.control` before importing
+PyTorch and the dynamic model patcher, so workflows queued after the UI starts
+use the correct initialization order.
+
+This guarantee does not apply to custom Python launchers that bypass
+`main.py`. Such launchers must initialize `comfy_aimdo.control` before
+importing `torch`, `nodes`, `comfy.model_patcher`, or any module that imports
+`comfy_aimdo.host_buffer`. Otherwise `host_buffer` can cache an uninitialized
+native-library handle and fail when `ModelPatcherDynamic` creates its first
+host buffer. The bundled command-line examples perform this early
+initialization automatically.
 
 ## Models
 
@@ -183,7 +220,7 @@ For command-line, two-step end-to-end checks after a fresh installation, see
 the bundled [`examples/`](examples/README.md) directory. It includes one-click
 T2VA, FL2VA, image-reference Ref2VA, and video-reference Ref2VA scripts plus
 recorded outputs, memory traces, and validation metadata. Its summary separates
-the current `0.4.0` Ref2VA result from retained historical `0.3.x` fixtures.
+the current clean-install `0.4.1` results for all four supported scenarios.
 
 Import the workflow matching the generation mode:
 
@@ -210,10 +247,10 @@ preflight and text/visual encoding before any reference image, video, or audio
 VAE encode. Oversized multimodal prompts therefore fail before expensive VAE
 work begins.
 
-The workflow files for all modes use the same `0.4.0` fused DiT integration.
-The current release-level end-to-end performance and memory claim is limited
-to the Ref2VA run documented above; older split-path T2VA and FL2VA timings are
-not carried forward as fused-path results.
+The workflow files for all modes use the fused DiT integration introduced in
+`0.4.0`. The current release-level performance and memory claim remains the
+20-step Ref2VA run documented above; the `0.4.1` two-step example results are
+clean-install functional checks and are not presented as throughput results.
 
 | Setting | Default | Description |
 |---|---:|---|
@@ -221,9 +258,22 @@ not carried forward as fused-path results.
 | `kv_chunk_tokens` | `4096` | K/V tokens transferred per tile |
 | `enabled` | `true` | Enables or bypasses the patch |
 
+Calibrate `q_chunk_tokens` for the deployed GPU, backend, CPU affinity, and
+NUMA memory policy using the independent
+[SeqAttn chunk-size calibration guide](https://github.com/renlililoli/stream-attn/blob/main/docs/q_chunk_calibration.md).
+The shipped `5760` value matches the validated RTX 5090 single-node path at
+about 37 GB/s concurrent pinned H2D bandwidth. The same GPU used `3840` after
+interleaving pinned pages across two populated memory nodes reproduced about
+56.7 GB/s. Do not select Q from nominal PCIe bandwidth or advertised GPU peak
+TFLOPS; the guide measures the effective concurrent bandwidth and resident
+attention throughput used by the roofline.
+
 QKV projection and MLP tiles are deployment configuration, not workflow node
-inputs. The default is 4,096 tokens for both. Override them with the shared
-SeqAttn TOML file selected by `SEQATTN_CONFIG`, or
+inputs. Together with the 4,096-token K/V tile, they are secondary tuning
+parameters after Q is calibrated. The measured MiniMax-H3 block showed smaller
+performance changes across these tiles than across the Q roofline boundary;
+the default is 4,096 tokens for both projection and MLP. Override them with the
+shared SeqAttn TOML file selected by `SEQATTN_CONFIG`, or
 `~/.config/seqattn/config.toml`:
 
 ```toml

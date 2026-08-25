@@ -9,6 +9,7 @@
     ]
   },
   "configuration": {
+    "aimdo_watermark_margin_mib": 2560.0,
     "audio_device": "cpu",
     "frames": 124,
     "height": 768,
@@ -20,46 +21,65 @@
   },
   "denoise": {
     "steps": 2,
-    "torch_peak_allocated_mib": 3876.4755859375,
-    "torch_peak_reserved_mib": 4286.0
+    "torch_peak_allocated_mib": 2413.32275390625,
+    "torch_peak_reserved_mib": 2768.0
   },
   "diffusion_model": {
+    "current_patcher_type": null,
     "hidden_size": 5376,
     "input_conditioning_width": 5120,
+    "is_dynamic": true,
+    "patcher_type": "ModelPatcherDynamic",
     "upstream_refiner_required": true
   },
+  "dynamic_vram": {
+    "aimdo_enabled": true,
+    "core_model_patcher": "ModelPatcherDynamic",
+    "device_extra_headroom_mib": 0.0,
+    "devices": [
+      "cuda:0"
+    ],
+    "devices_initialized": true,
+    "simple_headroom_mib": 27359.0
+  },
   "environment": {
-    "comfyui_commit": "unknown",
+    "comfyui_commit": "9a9fdb10ed144ce760d9682cb247526ea23cc525",
     "comfyui_dir": "/opt/ComfyUI",
     "cuda": "12.8",
     "cuda_visible_devices": null,
     "gpu": "NVIDIA GeForce RTX 5090",
-    "hostname": "07ee712a7411",
+    "hostname": "6721229b6c6e",
     "package_commit": "unknown",
-    "package_root": "/workspace",
+    "package_root": "/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn",
     "python": "3.12.3",
     "torch": "2.10.0+cu128"
   },
-  "finished_at_utc": "2026-08-22T02:21:33.324179+00:00",
+  "finished_at_utc": "2026-08-25T14:34:51.317365+00:00",
   "inputs": {
     "ref_images": [
-      "/workspace/assets/benchmark/fl2va_first_frame_1344x768.png",
-      "/workspace/assets/benchmark/fl2va_last_frame_1344x768.png"
+      "/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/assets/benchmark/fl2va_first_frame_1344x768.png",
+      "/opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/assets/benchmark/fl2va_last_frame_1344x768.png"
     ]
   },
   "memory": {
-    "cpu_rss_peak_mib": 51630.97265625,
-    "nvml_process_peak_mib": 7392.0,
-    "sample_count": 4820,
-    "sample_interval_ms": 50.0,
+    "cpu_rss_peak_mib": 26991.3515625,
+    "nvml_process_peak_mib": 6820.0,
+    "sample_count": 22200,
+    "sample_interval_ms": 20.0,
     "trace_path": "/results/ref2va_images/memory_trace.csv.gz"
   },
   "memory_budget": {
+    "aimdo_device_extra_headroom_mib": 0.0,
+    "aimdo_watermark_margin_mib": 2560.0,
     "allocator_fraction": 0.2275860055471753,
     "allocator_limit_mib": 7308.0,
     "context_mib": 500.0,
+    "effective_aimdo_headroom_mib": 27359.0,
+    "nvml_total_mib": 32607.0,
     "physical_mib": 32110.9375,
+    "requested_reserve_mib": 3072.0,
     "safety_mib": 384,
+    "target_derived_aimdo_headroom_mib": 27359.0,
     "target_mib": 8192
   },
   "output": {
@@ -82,7 +102,7 @@
         "width": 1344
       }
     },
-    "size_bytes": 4744044,
+    "size_bytes": 4625890,
     "video_shape": [
       124,
       768,
@@ -137,74 +157,103 @@
   },
   "phases": [
     {
-      "cpu_rss_peak_mib": 10286.7421875,
+      "cpu_rss_peak_mib": 1334.51953125,
+      "end_elapsed_ms": 7059.862677007914,
       "name": "video_vae_load",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 52,
-      "seconds": 3.0272701838985085
+      "sample_count": 7,
+      "seconds": 0.13914958527311683,
+      "start_elapsed_ms": 6920.713091734797
     },
     {
-      "cpu_rss_peak_mib": 8525.29296875,
+      "cpu_rss_peak_mib": 4028.30078125,
+      "end_elapsed_ms": 7853.25379576534,
       "name": "qwen_load",
       "nvml_process_peak_mib": 500.0,
-      "sample_count": 9,
-      "seconds": 0.9071972980163991
+      "sample_count": 15,
+      "seconds": 0.7916513090021908,
+      "start_elapsed_ms": 7061.6024867631495
     },
     {
-      "cpu_rss_peak_mib": 23618.66796875,
+      "cpu_rss_peak_mib": 20863.640625,
+      "end_elapsed_ms": 141349.9135519378,
       "name": "conditioning",
-      "nvml_process_peak_mib": 6612.0,
-      "sample_count": 618,
-      "seconds": 32.06244024191983
+      "nvml_process_peak_mib": 6820.0,
+      "sample_count": 6324,
+      "seconds": 133.40241080522537,
+      "start_elapsed_ms": 7947.502746712416
     },
     {
-      "cpu_rss_peak_mib": 24546.18359375,
+      "cpu_rss_peak_mib": 3930.05078125,
+      "end_elapsed_ms": 143554.62116701528,
       "name": "diffusion_model_load",
-      "nvml_process_peak_mib": 1564.0,
-      "sample_count": 4,
-      "seconds": 0.2284510750323534
+      "nvml_process_peak_mib": 886.0,
+      "sample_count": 3,
+      "seconds": 0.09604343632236123,
+      "start_elapsed_ms": 143458.57773069292
     },
     {
-      "cpu_rss_peak_mib": 48597.9453125,
+      "cpu_rss_peak_mib": 26991.3515625,
+      "end_elapsed_ms": 393977.540937718,
       "name": "denoise",
-      "nvml_process_peak_mib": 4984.0,
-      "sample_count": 3042,
-      "seconds": 158.3708835679572
+      "nvml_process_peak_mib": 4286.0,
+      "sample_count": 11735,
+      "seconds": 250.41318345302716,
+      "start_elapsed_ms": 143564.35748469085
     },
     {
-      "cpu_rss_peak_mib": 48600.93359375,
+      "cpu_rss_peak_mib": 3045.140625,
+      "end_elapsed_ms": 397467.9389856756,
+      "name": "video_vae_reload",
+      "nvml_process_peak_mib": 1494.0,
+      "sample_count": 7,
+      "seconds": 0.13871561363339424,
+      "start_elapsed_ms": 397329.2233720422
+    },
+    {
+      "cpu_rss_peak_mib": 9123.640625,
+      "end_elapsed_ms": 460181.7851960659,
       "name": "video_decode",
-      "nvml_process_peak_mib": 7392.0,
-      "sample_count": 373,
-      "seconds": 19.141838633920997
+      "nvml_process_peak_mib": 6002.0,
+      "sample_count": 2982,
+      "seconds": 62.707478711381555,
+      "start_elapsed_ms": 397474.30648468435
     },
     {
-      "cpu_rss_peak_mib": 51630.97265625,
+      "cpu_rss_peak_mib": 4225.9296875,
+      "end_elapsed_ms": 461068.8942526467,
       "name": "audio_vae_load",
-      "nvml_process_peak_mib": 1726.0,
-      "sample_count": 5,
-      "seconds": 0.2990166668314487
+      "nvml_process_peak_mib": 1494.0,
+      "sample_count": 3,
+      "seconds": 0.08110795868560672,
+      "start_elapsed_ms": 460987.7862939611
     },
     {
-      "cpu_rss_peak_mib": 51241.15625,
+      "cpu_rss_peak_mib": 4636.16796875,
+      "end_elapsed_ms": 467781.4240916632,
       "name": "audio_decode",
-      "nvml_process_peak_mib": 1726.0,
-      "sample_count": 136,
-      "seconds": 6.937279336154461
+      "nvml_process_peak_mib": 1494.0,
+      "sample_count": 316,
+      "seconds": 6.708134138025343,
+      "start_elapsed_ms": 461073.28995363787
     },
     {
-      "cpu_rss_peak_mib": 51206.890625,
+      "cpu_rss_peak_mib": 4718.3046875,
+      "end_elapsed_ms": 475246.71544879675,
       "name": "media_write",
-      "nvml_process_peak_mib": 1726.0,
-      "sample_count": 206,
-      "seconds": 11.921324016992003
+      "nvml_process_peak_mib": 1494.0,
+      "sample_count": 277,
+      "seconds": 7.457731556147337,
+      "start_elapsed_ms": 467788.9838926494
     },
     {
-      "cpu_rss_peak_mib": 51209.9609375,
+      "cpu_rss_peak_mib": 4522.38671875,
+      "end_elapsed_ms": 475525.4732617177,
       "name": "media_probe",
-      "nvml_process_peak_mib": 1726.0,
-      "sample_count": 11,
-      "seconds": 0.5351409779395908
+      "nvml_process_peak_mib": 1494.0,
+      "sample_count": 13,
+      "seconds": 0.2718201298266649,
+      "start_elapsed_ms": 475253.65313189104
     }
   ],
   "qwen_preflight": {
@@ -228,7 +277,28 @@
     "stores": 0
   },
   "scenario": "ref2va_images",
-  "started_at_utc": "2026-08-22T02:17:20.128135+00:00",
+  "seqattn_weight_schedule": {
+    "event_counts": {
+      "compute_end": 100,
+      "compute_start": 100,
+      "prepare": 100,
+      "ready": 100,
+      "release": 100
+    },
+    "forward_count": 2,
+    "max_staged_blocks": 2,
+    "path": "/results/ref2va_images/weight_schedule.json.gz",
+    "ready_blocked_seconds": 0.010853325948119164,
+    "record_count": 500,
+    "settings": {
+      "kv_chunk_tokens": 4096,
+      "mlp_tile_tokens": 4096,
+      "q_chunk_tokens": 5760,
+      "qkv_tile_tokens": 4096
+    },
+    "vbar_loaded_peak_mib": 320.0
+  },
+  "started_at_utc": "2026-08-25T14:26:55.346124+00:00",
   "status": "success",
   "upstream_refiner": {
     "condition_proj": 1,

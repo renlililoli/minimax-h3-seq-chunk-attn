@@ -1,0 +1,49 @@
+services:
+  comfyui:
+    image: ${IMAGE_NAME}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        COMFYUI_BASE_IMAGE: ${COMFYUI_BASE_IMAGE}
+    ports:
+      - "${HOST_PORT}:${COMFYUI_PORT}"
+    ipc: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID}"]
+              capabilities: [gpu]
+    environment:
+      COMFYUI_LISTEN: ${COMFYUI_LISTEN}
+      COMFYUI_PORT: ${COMFYUI_PORT}
+      COMFYUI_ENABLE_DYNAMIC_VRAM: ${COMFYUI_ENABLE_DYNAMIC_VRAM}
+      COMFYUI_DISABLE_NVML_PRESSURE: ${COMFYUI_DISABLE_NVML_PRESSURE}
+      COMFYUI_DISABLE_ASYNC_OFFLOAD: ${COMFYUI_DISABLE_ASYNC_OFFLOAD}
+      COMFYUI_ASYNC_OFFLOAD_STREAMS: ${COMFYUI_ASYNC_OFFLOAD_STREAMS}
+      COMFYUI_RESERVE_VRAM_GIB: ${COMFYUI_RESERVE_VRAM_GIB}
+      COMFYUI_VRAM_HEADROOM_GIB: ${COMFYUI_VRAM_HEADROOM_GIB}
+      COMFYUI_EXTRA_ARGS: ${COMFYUI_EXTRA_ARGS}
+      CUDA_MODULE_LOADING: ${CUDA_MODULE_LOADING}
+      PYTORCH_ALLOC_CONF: ${PYTORCH_ALLOC_CONF}
+      MALLOC_ARENA_MAX: ${MALLOC_ARENA_MAX}
+      MALLOC_MMAP_THRESHOLD_: ${MALLOC_MMAP_THRESHOLD_}
+      MALLOC_TRIM_THRESHOLD_: ${MALLOC_TRIM_THRESHOLD_}
+      XDG_CACHE_HOME: ${XDG_CACHE_HOME}
+      TORCHINDUCTOR_CACHE_DIR: ${TORCHINDUCTOR_CACHE_DIR}
+      SEQATTN_CONFIG: ${SEQATTN_CONFIG}
+      SEQATTN_ENABLE_NVTX: ${SEQATTN_ENABLE_NVTX}
+    volumes:
+      - ${MODELS_DIR}:/opt/ComfyUI/models:ro
+      - ${INPUT_DIR}:/opt/ComfyUI/input
+      - ${OUTPUT_DIR}:/opt/ComfyUI/output
+      - ${USER_DIR}:/opt/ComfyUI/user
+      - ./seqattn.toml:/etc/seqattn/config.toml:ro
+    restart: unless-stopped

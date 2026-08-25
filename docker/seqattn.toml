@@ -1,0 +1,6 @@
+[attention]
+backend = "auto"
+
+[minimax_h3]
+qkv_tile_tokens = 4096
+mlp_tile_tokens = 4096

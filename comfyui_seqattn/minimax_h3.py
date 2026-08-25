@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager, nullcontext
 
 import comfy.ldm.common_dit
+import comfy.ldm.minimax.model as native_minimax
 import comfy.model_management
 import comfy.quant_ops
 import torch
@@ -16,7 +17,6 @@ from comfy.ldm.minimax.model import (
     pack_audio,
     patchify_video,
     time_shift_sigma,
-    time_shift_slope,
     unpack_audio,
     unpatchify_video,
 )
@@ -77,6 +77,21 @@ def _gate_tile(
     for a, b, row in _segment_intersections(segments, start, stop):
         residual[a:b].addcmul_(update[a:b], gate[row].to(update.dtype))
     return residual
+
+
+def _audio_velocity(
+    audio_rows: torch.Tensor,
+    audio_x: torch.Tensor,
+    sigma_v: torch.Tensor,
+    shift_v: float,
+    shift_a: float,
+) -> torch.Tensor:
+    audio_velocity = -unpack_audio(audio_rows).to(audio_x.dtype)
+    slope_fn = getattr(native_minimax, "time_shift_slope", None)
+    if slope_fn is not None:
+        slope = slope_fn(sigma_v, shift_v, shift_a).to(audio_velocity.dtype)
+        audio_velocity.mul_(slope)
+    return audio_velocity
 
 
 def _qkv_with_rope(block, tile: torch.Tensor, position_ids: torch.Tensor, model):
@@ -632,11 +647,9 @@ def streaming_minimax_h3_forward(
             model.patch_size,
         )
         video_out = video_out[:, :, :original_t, :original_h, :original_w]
-        audio_out = unpack_audio(audio_rows)
-        slope_a = time_shift_slope(sigma_v, shift_v, shift_a).to(audio_out.dtype)
         return [
             -video_out.to(video_x.dtype),
-            (-slope_a) * audio_out.to(audio_x.dtype),
+            _audio_velocity(audio_rows, audio_x, sigma_v, shift_v, shift_a),
         ]
 
 
