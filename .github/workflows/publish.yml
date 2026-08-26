@@ -1,10 +1,15 @@
 name: Publish to Comfy Registry
 
 on:
+  release:
+    types:
+      - published
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+    inputs:
+      tag:
+        description: Existing GitHub Release tag whose notes should be synced
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,8 +17,77 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: Comfy-Org/publish-node-action@main
+      - name: Check out release tag
+        uses: actions/checkout@v4
         with:
-          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Read GitHub Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json body \
+            --jq .body > "$RUNNER_TEMP/comfy-registry-changelog.md"
+          if [[ ! -s "$RUNNER_TEMP/comfy-registry-changelog.md" ]]; then
+            echo "::error::GitHub Release $RELEASE_TAG has an empty body"
+            exit 1
+          fi
+
+      - name: Install Comfy Registry publisher
+        if: github.event_name == 'release'
+        run: python -m pip install "comfy-cli==1.18.0"
+
+      - name: Publish node and release notes
+        if: github.event_name == 'release'
+        env:
+          REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+        run: |
+          comfy --skip-prompt --no-enable-telemetry env
+          comfy node publish \
+            --token "$REGISTRY_ACCESS_TOKEN" \
+            --changelog-file "$RUNNER_TEMP/comfy-registry-changelog.md"
+
+      - name: Resolve existing Registry version
+        if: github.event_name == 'workflow_dispatch'
+        id: registry-version
+        run: |
+          version="${RELEASE_TAG#v}"
+          version_id="$({ curl --fail --silent --show-error \
+            "https://api.comfy.org/nodes/minimax-h3-seqattn/versions/$version"; } | \
+            python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "id=$version_id" >> "$GITHUB_OUTPUT"
+
+      - name: Sync notes to existing Registry version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          VERSION_ID: ${{ steps.registry-version.outputs.id }}
+        run: |
+          python - "$RUNNER_TEMP/comfy-registry-changelog.md" \
+            "$RUNNER_TEMP/registry-version-update.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          changelog = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+          pathlib.Path(sys.argv[2]).write_text(
+              json.dumps({"changelog": changelog}), encoding="utf-8"
+          )
+          PY
+          curl --fail-with-body --silent --show-error \
+            --request PUT \
+            --header "Authorization: Bearer $REGISTRY_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/registry-version-update.json" \
+            "https://api.comfy.org/publishers/renlililoli/nodes/minimax-h3-seqattn/versions/$VERSION_ID"
