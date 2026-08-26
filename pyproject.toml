@@ -5,7 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minimax-h3-seqattn"
 version = "0.4.1"
-description = "Exact CPU-backed SeqAttn for native ComfyUI MiniMax-H3 models"
+# comfy-cli publishes this field as the Comfy Registry node description.
+description = "**MiniMax H3 SeqAttn brings long-sequence MiniMax-H3 generation to low-VRAM ComfyUI setups.** By streaming long-sequence activations through CPU memory and processing attention and MLPs in fixed-size GPU tiles, **denoising VRAM stays bounded instead of growing with sequence length**. The current implementation has been validated within an **8 GiB whole-process VRAM target**, while working directly with native ComfyUI MiniMax-H3 checkpoints without model conversion."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
