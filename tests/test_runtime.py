@@ -23,7 +23,9 @@ def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
 
     config_path = tmp_path / "seqattn.toml"
     config_path.write_text(
-        "[minimax_h3]\nqkv_tile_tokens = 1024\nmlp_tile_tokens = 512\n"
+        "[minimax_h3]\n"
+        "qkv_tile_tokens = 1024\n"
+        "mlp_tile_tokens = 512\n"
     )
     monkeypatch.setenv("SEQATTN_CONFIG", str(config_path))
     settings = runtime_mod.SeqAttnSettings.from_config(
@@ -60,6 +62,7 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         dtype=torch.bfloat16,
         device=torch.device("cuda:0"),
     )
+    assert created[0][1].backend is None
     assert runtime.runner_for(
         tokens=257,
         heads=4,
@@ -77,6 +80,7 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         dtype=torch.bfloat16,
         device=torch.device("cuda:0"),
     )
+    assert created[1][1].backend is None
     assert runtime.dit_runner_for(
         tokens=257,
         hidden_features=256,

@@ -23,7 +23,7 @@ from comfy.ldm.minimax.model import (
 from seqattn_core import H3BlockOps, H3SequenceMeta
 
 from .runtime import SeqAttnRuntime
-from .weight_stream import BlockWeightStreamer
+from .weight_stream import run_weight_stages
 
 
 def _pinned_empty(shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
@@ -586,39 +586,28 @@ def streaming_minimax_h3_forward(
                 device=video_x.device,
             )
 
-            weight_stream = BlockWeightStreamer(
+            def compute_block(index: int) -> None:
+                block = blocks[index]
+                runner.run_block_(
+                    hidden_a,
+                    sequence_meta,
+                    _block_ops(
+                        model,
+                        block,
+                        hidden_a,
+                        layout,
+                        mod_segments,
+                        t_emb,
+                    ),
+                    softmax_scale=first_block.attn.head_dim**-0.5,
+                )
+
+            run_weight_stages(
                 blocks,
                 video_x.device,
+                compute_block,
                 record=runtime.record_weight_schedule,
             )
-            current = weight_stream.prepare(0)
-            try:
-                for index, block in enumerate(blocks):
-                    weight_stream.wait_ready(current)
-                    next_state = (
-                        weight_stream.prepare(index + 1)
-                        if index + 1 < len(blocks)
-                        else None
-                    )
-                    weight_stream.compute_start(current)
-                    runner.run_block_(
-                        hidden_a,
-                        sequence_meta,
-                        _block_ops(
-                            model,
-                            block,
-                            hidden_a,
-                            layout,
-                            mod_segments,
-                            t_emb,
-                        ),
-                        softmax_scale=first_block.attn.head_dim**-0.5,
-                    )
-                    weight_stream.compute_end(current)
-                    weight_stream.release(current)
-                    current = next_state
-            finally:
-                weight_stream.close()
 
         video_seg = next(
             (a, b, t_row[seg_t["video"]])

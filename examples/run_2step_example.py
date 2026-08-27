@@ -190,6 +190,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int)
     parser.add_argument("--steps", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--dit-q-chunk-tokens", type=int, default=5760)
+    parser.add_argument("--dit-kv-chunk-tokens", type=int, default=4096)
+    parser.add_argument("--qwen-q-chunk-tokens", type=int, default=5760)
+    parser.add_argument("--qwen-kv-chunk-tokens", type=int, default=4096)
     parser.add_argument(
         "--target-vram-mib", type=int, default=DEFAULT_TARGET_VRAM_MIB
     )
@@ -212,6 +216,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt")
     parser.add_argument("--audio-device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--skip-audio-decode", action="store_true")
+    parser.add_argument(
+        "--conditioning-only",
+        action="store_true",
+        help="Stop after Qwen conditioning and resource-release validation.",
+    )
     return parser.parse_args()
 
 
@@ -583,6 +592,10 @@ def main() -> int:
             "frames": frames,
             "steps": args.steps,
             "seed": args.seed,
+            "dit_q_chunk_tokens": args.dit_q_chunk_tokens,
+            "dit_kv_chunk_tokens": args.dit_kv_chunk_tokens,
+            "qwen_q_chunk_tokens": args.qwen_q_chunk_tokens,
+            "qwen_kv_chunk_tokens": args.qwen_kv_chunk_tokens,
             "target_vram_mib": args.target_vram_mib,
             "aimdo_watermark_margin_mib": args.aimdo_watermark_margin_mib,
             "audio_device": args.audio_device,
@@ -679,8 +692,8 @@ def main() -> int:
             patch_minimax_h3_model,
         )
         from comfyui_seqattn.qwen import (
-            QWEN_STATE_KEY,
-            patch_minimax_h3_qwen_clip,
+            QWEN_SEQATTN_STATE_KEY,
+            patch_minimax_h3_qwen_seqattn_clip,
         )
         from comfyui_seqattn.vae import patch_minimax_h3_video_vae
 
@@ -744,9 +757,7 @@ def main() -> int:
                 "minimax_h3_video_vae_fp16.safetensors"
             )[0],
         )
-        video_vae = patch_minimax_h3_video_vae(
-            video_vae, tile_size=192, workspace_mib=512
-        )
+        video_vae = patch_minimax_h3_video_vae(video_vae)
 
         previous_vram_state = model_management.vram_state
         model_management.vram_state = model_management.VRAMState.NORMAL_VRAM
@@ -761,20 +772,26 @@ def main() -> int:
             )
         finally:
             model_management.vram_state = previous_vram_state
-        clip = patch_minimax_h3_qwen_clip(
+        clip = patch_minimax_h3_qwen_seqattn_clip(
             clip,
-            activation_limit_mib=5888,
-            max_conditioning_rows=25000,
-            preflight_safety_mib=128,
-            offload_mode="prefetch",
+            q_chunk_tokens=args.qwen_q_chunk_tokens,
+            kv_chunk_tokens=args.qwen_kv_chunk_tokens,
         )
-        qwen_controller = getattr(clip, QWEN_STATE_KEY)
+        qwen_controller = getattr(clip, QWEN_SEQATTN_STATE_KEY)
         original_preflight = qwen_controller.preflight
 
         def recording_preflight(tokens, _original_preflight=original_preflight):
-            plan = _original_preflight(tokens)
-            result["qwen_preflight"] = plan
-            return plan
+            layout = _original_preflight(tokens)
+            result["qwen_preflight"] = {
+                "total_rows": layout.total_rows,
+                "visual_rows": layout.visual_rows,
+                "non_visual_rows": layout.total_rows - layout.visual_rows,
+                "visual_spans": [
+                    {"start": span.start, "stop": span.stop}
+                    for span in layout.visual_spans
+                ],
+            }
+            return layout
 
         qwen_controller.preflight = recording_preflight
 
@@ -836,6 +853,13 @@ def main() -> int:
             "dtype": str(conditioning_tensor.dtype),
             "device": str(conditioning_tensor.device),
         }
+        result["qwen_streaming"] = {
+            **(qwen_controller.last_encode_stats or {}),
+            "q_chunk_tokens": qwen_controller.settings.q_chunk_tokens,
+            "kv_chunk_tokens": qwen_controller.settings.kv_chunk_tokens,
+            "qkv_tile_tokens": qwen_controller.settings.qkv_tile_tokens,
+            "mlp_tile_tokens": qwen_controller.settings.mlp_tile_tokens,
+        }
         result["packed_sequence"] = build_packed_layout(
             PackedLayout, positive, latent, frames
         )
@@ -851,6 +875,10 @@ def main() -> int:
         model_management.soft_empty_cache()
         release_unused_host_memory()
 
+        if args.conditioning_only:
+            result["status"] = "success"
+            return 0
+
         model = phase(
             "diffusion_model_load",
             lambda: comfy_nodes.UNETLoader().load_unet(
@@ -859,8 +887,8 @@ def main() -> int:
         )
         model = patch_minimax_h3_model(
             model,
-            q_chunk_tokens=5760,
-            kv_chunk_tokens=4096,
+            q_chunk_tokens=args.dit_q_chunk_tokens,
+            kv_chunk_tokens=args.dit_kv_chunk_tokens,
         )
         runtime = model.model_options["transformer_options"][STATE_KEY]
         diffusion_model = model.model.diffusion_model
@@ -938,9 +966,7 @@ def main() -> int:
                 "minimax_h3_video_vae_fp16.safetensors"
             )[0],
         )
-        video_vae = patch_minimax_h3_video_vae(
-            video_vae, tile_size=192, workspace_mib=512
-        )
+        video_vae = patch_minimax_h3_video_vae(video_vae)
         decoded = phase(
             "video_decode",
             lambda _video_vae=video_vae, _video_latent=video_latent: (

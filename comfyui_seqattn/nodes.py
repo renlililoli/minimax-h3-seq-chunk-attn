@@ -19,7 +19,7 @@ from comfy_extras.nodes_minimax_h3 import (
 )
 
 from .minimax_h3 import streaming_minimax_h3_forward
-from .qwen import patch_minimax_h3_qwen_clip
+from .qwen import patch_minimax_h3_qwen_seqattn_clip
 from .runtime import SeqAttnRuntime, SeqAttnSettings
 from .vae import patch_minimax_h3_video_vae
 
@@ -70,17 +70,14 @@ def _on_model_cleanup(model_patcher):
 
 
 def patch_minimax_h3_model(
-    model,
-    *,
-    q_chunk_tokens: int,
-    kv_chunk_tokens: int,
+    model, *, q_chunk_tokens: int, kv_chunk_tokens: int
 ):
     _diffusion_model(model)
     patched = model.clone()
     runtime = SeqAttnRuntime(
         SeqAttnSettings.from_config(
-            q_chunk_tokens=int(q_chunk_tokens),
-            kv_chunk_tokens=int(kv_chunk_tokens),
+            q_chunk_tokens=q_chunk_tokens,
+            kv_chunk_tokens=kv_chunk_tokens,
         )
     )
     patched.model_options.setdefault("transformer_options", {})[STATE_KEY] = runtime
@@ -130,7 +127,6 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
                     options=[2048, 4096, 8192, 16384],
                     default=4096,
                 ),
-                io.Boolean.Input("enabled", default=True),
             ],
             outputs=[io.Model.Output()],
         )
@@ -141,10 +137,7 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
         model: io.Model.Type,
         q_chunk_tokens: int,
         kv_chunk_tokens: int,
-        enabled: bool,
     ) -> io.NodeOutput:
-        if not enabled:
-            return io.NodeOutput(model)
         patched = patch_minimax_h3_model(
             model,
             q_chunk_tokens=q_chunk_tokens,
@@ -153,71 +146,44 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
         return io.NodeOutput(patched)
 
 
-class MiniMaxH3QwenBF16Offload(io.ComfyNode):
+class MiniMaxH3QwenSeqAttn(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="MiniMaxH3QwenBF16Offload",
-            display_name="MiniMax H3 Qwen BF16 Offload",
-            description="Bounds native MiniMax-H3 Qwen conditioning memory with BF16 activations, input preflight, and selectable dual-stream or extreme offload.",
+            node_id="MiniMaxH3QwenSeqAttn",
+            display_name="MiniMax H3 Qwen SeqAttn",
+            description="Exact CPU-backed streaming vision and causal GQA conditioning for the native MiniMax-H3 Qwen3-VL-32B encoder.",
             category="model/patch/minimax",
             is_experimental=True,
             inputs=[
                 io.Clip.Input("clip"),
                 io.Int.Input(
-                    "activation_limit_mib",
-                    default=5888,
-                    min=1024,
-                    max=65536,
-                    step=256,
-                    advanced=True,
-                ),
-                io.Int.Input(
-                    "max_conditioning_rows",
-                    default=25000,
-                    min=1024,
-                    max=100000,
-                    step=1024,
-                    advanced=True,
-                ),
-                io.Int.Input(
-                    "preflight_safety_mib",
-                    default=128,
-                    min=0,
-                    max=8192,
+                    "q_chunk_tokens",
+                    default=5760,
+                    min=128,
+                    max=262144,
                     step=128,
-                    advanced=True,
                 ),
                 io.Combo.Input(
-                    "offload_mode",
-                    options=["prefetch", "extreme"],
-                    default="prefetch",
+                    "kv_chunk_tokens",
+                    options=[2048, 4096, 8192, 16384],
+                    default=4096,
                 ),
-                io.Boolean.Input("enabled", default=True),
             ],
             outputs=[io.Clip.Output()],
         )
 
     @classmethod
     def execute(
-        cls,
-        clip,
-        activation_limit_mib: int,
-        max_conditioning_rows: int,
-        preflight_safety_mib: int,
-        offload_mode: str,
-        enabled: bool,
+        cls, clip, q_chunk_tokens: int, kv_chunk_tokens: int
     ) -> io.NodeOutput:
-        if not enabled:
-            return io.NodeOutput(clip)
-        patched = patch_minimax_h3_qwen_clip(
-            clip,
-            activation_limit_mib=activation_limit_mib,
-            max_conditioning_rows=max_conditioning_rows,
-            preflight_safety_mib=preflight_safety_mib,
-            offload_mode=offload_mode,
+        return io.NodeOutput(
+            patch_minimax_h3_qwen_seqattn_clip(
+                clip,
+                q_chunk_tokens=q_chunk_tokens,
+                kv_chunk_tokens=kv_chunk_tokens,
+            )
         )
-        return io.NodeOutput(patched)
 
 
 class MiniMaxH3VAEStreaming(io.ComfyNode):
@@ -229,43 +195,13 @@ class MiniMaxH3VAEStreaming(io.ComfyNode):
             description="Reduces native MiniMax-H3 video VAE spatial tiles to bound keyframe encode and video decode activation memory.",
             category="model/patch/minimax",
             is_experimental=True,
-            inputs=[
-                io.Vae.Input("vae"),
-                io.Int.Input(
-                    "tile_size",
-                    default=192,
-                    min=128,
-                    max=512,
-                    step=16,
-                ),
-                io.Int.Input(
-                    "workspace_mib",
-                    default=512,
-                    min=256,
-                    max=8192,
-                    step=256,
-                    advanced=True,
-                ),
-                io.Boolean.Input("enabled", default=True),
-            ],
+            inputs=[io.Vae.Input("vae")],
             outputs=[io.Vae.Output()],
         )
 
     @classmethod
-    def execute(
-        cls,
-        vae,
-        tile_size: int,
-        workspace_mib: int,
-        enabled: bool,
-    ) -> io.NodeOutput:
-        if not enabled:
-            return io.NodeOutput(vae)
-        return io.NodeOutput(
-            patch_minimax_h3_video_vae(
-                vae, tile_size=tile_size, workspace_mib=workspace_mib
-            )
-        )
+    def execute(cls, vae) -> io.NodeOutput:
+        return io.NodeOutput(patch_minimax_h3_video_vae(vae))
 
 
 class MiniMaxH3ReferenceToVideoSeqAttn(NativeMiniMaxH3ReferenceToVideo):
@@ -442,7 +378,7 @@ class SeqAttnExtension(ComfyExtension):
     async def get_node_list(self):
         return [
             MiniMaxH3SeqAttn,
-            MiniMaxH3QwenBF16Offload,
+            MiniMaxH3QwenSeqAttn,
             MiniMaxH3VAEStreaming,
             MiniMaxH3ReferenceToVideoSeqAttn,
         ]
@@ -454,7 +390,7 @@ async def comfy_entrypoint():
 
 __all__ = [
     "MiniMaxH3SeqAttn",
-    "MiniMaxH3QwenBF16Offload",
+    "MiniMaxH3QwenSeqAttn",
     "MiniMaxH3ReferenceToVideoSeqAttn",
     "MiniMaxH3VAEStreaming",
     "SeqAttnExtension",

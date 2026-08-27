@@ -7,22 +7,21 @@ Exact CPU-backed streaming attention for native ComfyUI MiniMax-H3 models.
 [![Weights](https://img.shields.io/badge/INT8%20DiT-NVFP4%20Text-7c3aed)](#models)
 [![Capacity](https://img.shields.io/badge/81K%20tokens-8%20GiB%20validated-16a34a)](#validated-run)
 
-This package bounds both major MiniMax-H3 activation paths. The SeqAttn model
-patch keeps one long-sequence hidden state and complete Q/K/V tensors in pinned
-CPU memory. Attention output, output projection, residual updates, and the
-complete MLP remain on GPU in bounded tiles, so only the final block hidden
-state returns to CPU. DiT weights use a strict current-block plus next-block
-pipeline instead of ComfyUI's native DiT prefetch queue. The Qwen BF16 patch
-runs text and visual conditioning with bounded BF16 activations and
-layer-offloaded weights. Both work with existing ComfyUI checkpoints without
-conversion. MiniMax-H3 text projection and token refinement run once per
-sampling job; the refined conditioning is then reused from pinned CPU memory
-for the remaining denoise steps.
+This package bounds both major MiniMax-H3 activation paths. The DiT and Qwen
+SeqAttn patches keep long-sequence hidden state and complete Q/K/V tensors in
+pinned CPU memory while attention, projections, residual updates, mergers, and
+MLPs execute in bounded GPU tiles. Both stages use a strict current-layer plus
+next-layer Dynamic VBAR weight pipeline instead of ComfyUI's native prefetch
+queue. The independent video VAE patch streams spatial tiles and long inputs.
+All three patches work with existing ComfyUI checkpoints without conversion.
+MiniMax-H3 text projection and token refinement run once per sampling job; the
+refined conditioning is then reused from pinned CPU memory for the remaining
+denoise steps.
 
-Supported layouts: T2VA, FL2VA, and Ref2VA. The current `0.4.0` validation is a
-complete 20-step, 81,180-token Ref2VA run at 1344x768 with 124 output frames.
-Older `0.3.x` measurements are intentionally excluded from the current-version
-tables below.
+Supported layouts: T2VA, FL2VA, and Ref2VA. The published `0.4.0` validation is
+a complete 20-step, 81,180-token Ref2VA run at 1344x768 with 124 output frames.
+That historical result validates the fused DiT path and the previous Qwen
+offload implementation; it is not a Qwen SeqAttn performance claim.
 
 The supported ComfyUI baseline is fixed to **version `0.30.0`, commit
 `9a9fdb10ed144ce760d9682cb247526ea23cc525`**. Newer ComfyUI releases are not
@@ -88,7 +87,7 @@ Do not alter the visual style, weather, time of day, architecture, machinery, ba
 ```
 
 - Model: MiniMax-H3 Ref2VA INT8 ConvRot DiT
-- Text encoder: Qwen3-VL 32B NVFP4 AWQ with community `prefetch` offload
+- Text encoder: Qwen3-VL 32B NVFP4 AWQ with the historical `prefetch` offload
 - Qwen conditioning: 6,174 rows
 - Qwen estimated activation: 2,358.12 MiB plus 128 MiB safety
 - Query chunk: 5,760 tokens
@@ -109,26 +108,41 @@ Do not alter the visual style, weather, time of day, architecture, machinery, ba
 
 ## Qwen Conditioning
 
-Add **MiniMax H3 Qwen BF16 Offload** after the MiniMax `CLIPLoader` and before
-the MiniMax conditioning node. The bundled workflow already includes it.
+Add **MiniMax H3 Qwen SeqAttn** after the MiniMax `CLIPLoader` and before the
+MiniMax conditioning node. Connecting it explicitly selects the streaming Qwen
+implementation; wiring the loader directly to the conditioning node keeps the
+native ComfyUI implementation. The bundled low-memory workflows connect it.
+The previous activation-estimate-based Qwen BF16 offload node has been removed.
 
-The node converts token, vision, and decoder activations to BF16, uses an
-in-place decoder MLP, reuses hidden-state storage between layers, and rejects
-oversized text/image/video presentations before the vision tower runs.
+The SeqAttn node keeps complete vision and decoder hidden states, Q/K/V, and
+DeepStack features in pinned CPU memory. GPU execution is limited to configured
+projection, attention, merger, output-projection, residual, and MLP tiles. It
+uses packed non-causal vision attention and causal decoder GQA without building
+a quadratic causal mask. DeepStack is injected directly into CPU hidden after
+each of the first three decoder layers.
+
+Qwen uses the same current-plus-next Dynamic VBAR weight pipeline as the DiT
+path. It does not impose an artificial presentation-length limit; pinned host
+allocations, attention work, and runtime still scale with the actual text,
+image, and video input. Its node exposes the deployment-sensitive resident Q
+chunk and transferred K/V chunk independently from the DiT node:
 
 | Setting | Default | Description |
 |---|---:|---|
-| `offload_mode` | `prefetch` | `prefetch` uses two asynchronous weight streams; `extreme` disables asynchronous prefetch for the lowest transient weight footprint |
-| `activation_limit_mib` | `5888` | Per-layer Qwen activation-plan limit |
-| `max_conditioning_rows` | `25000` | Hard limit for the complete Qwen presentation |
-| `preflight_safety_mib` | `128` | Reserve added to the calibrated preflight estimate |
+| `q_chunk_tokens` | `5760` | Resident Q rows for Qwen vision and decoder attention |
+| `kv_chunk_tokens` | `4096` | K/V rows transferred per attention tile |
 
-The validated `0.4.0` run conditioned 6,174 rows. Preflight estimated
-2,358.12 MiB of activation storage, or 2,486.12 MiB with the configured safety
-reserve. The complete conditioning phase took 160.709 seconds and contained
-the run's 7,708 MiB whole-process peak. Preflight accounts for the quadratic
-causal mask and retained DeepStack features; the 25K-row value is an absolute
-input cap, not a guarantee that every 25K-row composition fits in 8 GiB.
+QKV projection and MLP tile sizes come from the shared SeqAttn TOML:
+
+```toml
+[minimax_h3_qwen]
+qkv_tile_tokens = 4096
+mlp_tile_tokens = 4096
+```
+
+The shipped Qwen Q/KV and tile values currently reuse the measured RTX 5090
+DiT configuration. They are starting values, not a claim that Qwen has been
+independently tuned to its performance optimum.
 
 ## Install
 
@@ -235,30 +249,25 @@ Import the workflow matching the generation mode:
 The four T2VA/FL2VA workflows use the same FL2VA checkpoint. The first frame
 anchors frame 0; the last frame anchors the final aligned output frame. To
 patch an existing workflow, add **MiniMax H3 SeqAttn** immediately after the
-diffusion-model loader and **MiniMax H3 Qwen BF16 Offload** immediately after
-the MiniMax `CLIPLoader`. For bounded keyframe encoding and video decoding,
-pass the video VAE through **MiniMax H3 VAE Streaming**; the bundled workflows
-use a validated 192-pixel tile and 512 MiB activation workspace. This also
-streams long VAE inputs and decoded frames through CPU memory.
+diffusion-model loader and **MiniMax H3 Qwen SeqAttn** immediately after the
+MiniMax `CLIPLoader`. For bounded keyframe encoding and video decoding, pass
+the video VAE through **MiniMax H3 VAE Streaming**. Each patch is independent:
+connect it to select streaming for that stage, or wire around it to keep the
+native ComfyUI implementation. There is no node-level `enabled` switch and no
+silent native fallback after a streaming error.
 
 The bundled Ref2VA workflow uses **MiniMax H3 Reference to Video (SeqAttn)**.
 It preserves the native reference ordering and payload, but completes Qwen
-preflight and text/visual encoding before any reference image, video, or audio
-VAE encode. Oversized multimodal prompts therefore fail before expensive VAE
-work begins.
+layout validation and text/visual encoding before any reference image, video,
+or audio VAE encode. It does not select a backend itself; the supplied `CLIP`
+and video `VAE` objects determine which implementations run.
 
 The workflow files for all modes use the fused DiT integration introduced in
 `0.4.0`. The current release-level performance and memory claim remains the
 20-step Ref2VA run documented above; the `0.4.1` two-step example results are
 clean-install functional checks and are not presented as throughput results.
 
-| Setting | Default | Description |
-|---|---:|---|
-| `q_chunk_tokens` | `5760` | Resident query tokens; select from the calibrated host-memory roofline |
-| `kv_chunk_tokens` | `4096` | K/V tokens transferred per tile |
-| `enabled` | `true` | Enables or bypasses the patch |
-
-Calibrate `q_chunk_tokens` for the deployed GPU, backend, CPU affinity, and
+Calibrate `q_chunk_tokens` for each deployed stage, GPU, backend, CPU affinity, and
 NUMA memory policy using the independent
 [SeqAttn chunk-size calibration guide](https://github.com/renlililoli/stream-attn/blob/main/docs/q_chunk_calibration.md).
 The shipped `5760` value matches the validated RTX 5090 single-node path at
@@ -268,22 +277,34 @@ interleaving pinned pages across two populated memory nodes reproduced about
 TFLOPS; the guide measures the effective concurrent bandwidth and resident
 attention throughput used by the roofline.
 
-QKV projection and MLP tiles are deployment configuration, not workflow node
-inputs. Together with the 4,096-token K/V tile, they are secondary tuning
-parameters after Q is calibrated. The measured MiniMax-H3 block showed smaller
-performance changes across these tiles than across the Q roofline boundary;
-the default is 4,096 tokens for both projection and MLP. Override them with the
-shared SeqAttn TOML file selected by `SEQATTN_CONFIG`, or
-`~/.config/seqattn/config.toml`:
+The DiT and Qwen patch nodes each expose their own Q/KV chunks as workflow
+inputs. This makes backend selection and the main performance parameter
+explicit per stage. QKV projection and MLP tiles, plus video VAE settings, are
+deployment configuration. Set them in the shared SeqAttn TOML file selected by
+`SEQATTN_CONFIG`, or
+`~/.config/seqattn/config.toml`. An explicitly selected missing or invalid file
+is an error; if the default user file is absent, the compiled defaults below
+are used.
 
 ```toml
+[attention]
+backend = "auto"
+
 [minimax_h3]
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
+
+[minimax_h3_qwen]
+qkv_tile_tokens = 4096
+mlp_tile_tokens = 4096
+
+[minimax_h3_vae]
+tile_size = 192
+workspace_mib = 512
 ```
 
-The node does not impose a whole-process VRAM limit or silently shrink the
-resident query chunk.
+The patch nodes do not impose a whole-process VRAM limit, silently shrink the
+resident query chunk, or fall back to native execution.
 
 ## License
 

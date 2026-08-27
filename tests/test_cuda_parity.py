@@ -11,34 +11,13 @@ from comfyui_seqattn import runtime as runtime_mod
 
 @pytest.fixture
 def resident_weight_stream(monkeypatch):
-    class ResidentWeightState:
-        def __init__(self, index):
-            self.index = index
+    def run_resident_stages(stages, device, compute, *, record=None):
+        del device, record
+        for index in range(len(stages)):
+            compute(index)
+        return min(len(stages), 2)
 
-    class ResidentWeightStreamer:
-        def __init__(self, blocks, device, *, record=None):
-            del device, record
-            self.blocks = blocks
-
-        def prepare(self, index):
-            return ResidentWeightState(index)
-
-        def wait_ready(self, state):
-            del state
-
-        def compute_start(self, state):
-            del state
-
-        def compute_end(self, state):
-            del state
-
-        def release(self, state):
-            del state
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(streaming, "BlockWeightStreamer", ResidentWeightStreamer)
+    monkeypatch.setattr(streaming, "run_weight_stages", run_resident_stages)
 
 
 def _tiny_model(

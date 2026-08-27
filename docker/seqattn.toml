@@ -4,3 +4,11 @@ backend = "auto"
 [minimax_h3]
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
+
+[minimax_h3_qwen]
+qkv_tile_tokens = 4096
+mlp_tile_tokens = 4096
+
+[minimax_h3_vae]
+tile_size = 192
+workspace_mib = 512

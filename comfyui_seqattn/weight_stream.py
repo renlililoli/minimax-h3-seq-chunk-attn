@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -11,23 +12,41 @@ import comfy_aimdo.model_vbar
 import torch
 
 RecordCallback = Callable[[dict[str, Any]], None]
+StageCompute = Callable[[int], None]
 
 
-def _vbar_modules(module) -> list:
+def _stage_modules(stage) -> Iterable:
+    if isinstance(stage, (list, tuple)):
+        for module in stage:
+            yield from _stage_modules(module)
+        return
+    yield stage
+
+
+def _vbar_modules(stage) -> list:
     modules = []
     seen = set()
-    for child in module.modules():
-        if not hasattr(child, "_v") or id(child) in seen:
-            continue
-        seen.add(id(child))
-        modules.append(child)
+    for module in _stage_modules(stage):
+        for child in module.modules():
+            if not hasattr(child, "_v") or id(child) in seen:
+                continue
+            seen.add(id(child))
+            modules.append(child)
     return modules
 
 
 def _registerable_size(modules: list) -> int:
     size = 0
     for module in modules:
-        size += comfy.memory_management.vram_aligned_size([module.weight, module.bias])
+        parameters = [
+            parameter
+            for parameter in (
+                getattr(module, "weight", None),
+                getattr(module, "bias", None),
+            )
+            if parameter is not None
+        ]
+        size += comfy.memory_management.vram_aligned_size(parameters)
         for param_key in ("weight", "bias"):
             lowvram_fn = getattr(module, param_key + "_lowvram_function", None)
             if lowvram_fn is not None:
@@ -65,7 +84,7 @@ class BlockWeightState:
 
 
 class BlockWeightStreamer:
-    """Two-slot ComfyUI VBAR adapter for the SeqAttn DiT schedule."""
+    """Bounded ComfyUI VBAR adapter for layer or module-group stages."""
 
     def __init__(
         self,
@@ -115,12 +134,14 @@ class BlockWeightStreamer:
         if index in self.states:
             raise RuntimeError(f"block {index} has already been prepared")
         if len(self.staged_indices) >= 2:
-            raise RuntimeError("SeqAttn block pipeline exceeded current-plus-next staging")
+            raise RuntimeError(
+                "SeqAttn weight pipeline exceeded current-plus-next staging"
+            )
 
         modules = _vbar_modules(self.blocks[index])
         if not modules:
             raise RuntimeError(
-                f"block {index} has no Dynamic VBAR weights; "
+                f"stage {index} has no Dynamic VBAR weights; "
                 "run ComfyUI with DynamicVRAM enabled"
             )
         collisions = [
@@ -128,7 +149,7 @@ class BlockWeightStreamer:
         ]
         if collisions:
             raise RuntimeError(
-                f"block {index} contains weights owned by another prefetch: "
+                f"stage {index} contains weights owned by another prefetch: "
                 + ", ".join(collisions)
             )
 
@@ -190,7 +211,8 @@ class BlockWeightStreamer:
         self._emit("compute_start", state)
 
     def compute_end(self, state: BlockWeightState) -> None:
-        torch.cuda.current_stream(self.device).synchronize()
+        if self.device.type == "cuda":
+            torch.cuda.current_stream(self.device).synchronize()
         self._emit("compute_end", state)
 
     def release(self, state: BlockWeightState) -> None:
@@ -204,7 +226,9 @@ class BlockWeightStreamer:
         for vbar in self._vbars():
             if remaining <= 0:
                 break
-            freed = int(vbar.free_memory(remaining))
+            requested = remaining
+            reported = int(vbar.free_memory(requested))
+            freed = min(max(reported, 0), requested)
             freed_bytes += freed
             remaining -= freed
         self._emit(
@@ -217,6 +241,8 @@ class BlockWeightStreamer:
     def close(self) -> None:
         if self.closed:
             return
+        if self.device.type == "cuda":
+            torch.cuda.current_stream(self.device).synchronize()
         for state in self.states.values():
             if state.released:
                 continue
@@ -226,4 +252,31 @@ class BlockWeightStreamer:
         self.closed = True
 
 
-__all__ = ["BlockWeightState", "BlockWeightStreamer"]
+def run_weight_stages(
+    stages: list,
+    device: torch.device,
+    compute: StageCompute,
+    *,
+    record: RecordCallback | None = None,
+) -> int:
+    if not stages:
+        return 0
+    streamer = BlockWeightStreamer(stages, device, record=record)
+    current = streamer.prepare(0)
+    try:
+        for index in range(len(stages)):
+            streamer.wait_ready(current)
+            next_state = (
+                streamer.prepare(index + 1) if index + 1 < len(stages) else None
+            )
+            streamer.compute_start(current)
+            compute(index)
+            streamer.compute_end(current)
+            streamer.release(current)
+            current = next_state
+        return streamer.max_staged_blocks
+    finally:
+        streamer.close()
+
+
+__all__ = ["BlockWeightState", "BlockWeightStreamer", "run_weight_stages"]

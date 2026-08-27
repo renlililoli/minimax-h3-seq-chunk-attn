@@ -27,23 +27,9 @@ def test_fl2va_workflows_are_standalone_and_use_safe_defaults():
         nodes = _nodes_by_type(workflow)
 
         assert nodes["UNETLoader"]["widgets_values"][0] == FL2VA_MODEL
-        assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [
-            5760,
-            4096,
-            True,
-        ]
-        assert nodes["MiniMaxH3QwenBF16Offload"]["widgets_values"] == [
-            5888,
-            25000,
-            128,
-            "prefetch",
-            True,
-        ]
-        assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == [
-            192,
-            512,
-            True,
-        ]
+        assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [5760, 4096]
+        assert nodes["MiniMaxH3QwenSeqAttn"]["widgets_values"] == [5760, 4096]
+        assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == []
 
         conditioning = nodes["MiniMaxH3ImageToVideo"]
         assert [item["name"] for item in conditioning["inputs"]] == [
@@ -87,16 +73,9 @@ def test_ref2va_workflow_uses_streaming_vae_and_matching_references():
     nodes = _nodes_by_type(workflow)
 
     assert nodes["UNETLoader"]["widgets_values"][0] == REF2VA_MODEL
-    assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [
-        5760,
-        4096,
-        True,
-    ]
-    assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == [
-        192,
-        512,
-        True,
-    ]
+    assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [5760, 4096]
+    assert nodes["MiniMaxH3QwenSeqAttn"]["widgets_values"] == [5760, 4096]
+    assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == []
 
     conditioning = nodes["MiniMaxH3ReferenceToVideoSeqAttn"]
     inputs = {item["name"]: item.get("link") for item in conditioning["inputs"]}

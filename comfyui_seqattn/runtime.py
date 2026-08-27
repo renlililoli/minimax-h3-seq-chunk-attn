@@ -11,8 +11,9 @@ from seqattn_core import (
     ProjectionPipelineConfig,
     StreamingAttentionConfig,
     build_plan,
-    load_h3_tile_config,
 )
+
+from .config import load_attention_stage_config
 
 
 @dataclass(frozen=True)
@@ -24,17 +25,14 @@ class SeqAttnSettings:
 
     @classmethod
     def from_config(
-        cls,
-        *,
-        q_chunk_tokens: int,
-        kv_chunk_tokens: int,
+        cls, *, q_chunk_tokens: int, kv_chunk_tokens: int
     ) -> SeqAttnSettings:
-        tiles = load_h3_tile_config()
+        config = load_attention_stage_config("minimax_h3")
         return cls(
             q_chunk_tokens=int(q_chunk_tokens),
             kv_chunk_tokens=int(kv_chunk_tokens),
-            qkv_tile_tokens=tiles.qkv_tile_tokens,
-            mlp_tile_tokens=tiles.mlp_tile_tokens,
+            qkv_tile_tokens=config.qkv_tile_tokens,
+            mlp_tile_tokens=config.mlp_tile_tokens,
         )
 
     def validate(self) -> None:
@@ -44,8 +42,8 @@ class SeqAttnSettings:
             ("qkv_tile_tokens", self.qkv_tile_tokens),
             ("mlp_tile_tokens", self.mlp_tile_tokens),
         ):
-            if value <= 0:
-                raise ValueError(f"{name} must be positive")
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
 
 
 class _SeqAttnRuntimeMetrics:
@@ -264,7 +262,7 @@ class SeqAttnRuntime:
             q_chunk_tokens=self.settings.q_chunk_tokens,
             kv_chunk_tokens=self.settings.kv_chunk_tokens,
             output_mode="device_consumer",
-            backend="auto",
+            backend=None,
             require_pinned=True,
             pin_output=True,
         )
@@ -328,7 +326,7 @@ class SeqAttnRuntime:
             q_chunk_tokens=self.settings.q_chunk_tokens,
             kv_chunk_tokens=self.settings.kv_chunk_tokens,
             output_mode="device_consumer",
-            backend="auto",
+            backend=None,
             require_pinned=True,
             pin_output=True,
             enable_nvtx=enable_nvtx,

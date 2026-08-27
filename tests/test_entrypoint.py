@@ -41,7 +41,7 @@ def test_repository_root_is_a_comfyui_v3_extension():
     nodes = asyncio.run(extension.get_node_list())
     assert [node.__name__ for node in nodes] == [
         "MiniMaxH3SeqAttn",
-        "MiniMaxH3QwenBF16Offload",
+        "MiniMaxH3QwenSeqAttn",
         "MiniMaxH3VAEStreaming",
         "MiniMaxH3ReferenceToVideoSeqAttn",
     ]

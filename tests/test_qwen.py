@@ -8,182 +8,157 @@ import torch
 from comfyui_seqattn import qwen
 
 
-def test_settings_validation():
-    qwen.QwenMemorySettings().validate()
-    with pytest.raises(ValueError, match="activation_limit_mib"):
-        qwen.QwenMemorySettings(activation_limit_mib=0).validate()
-    with pytest.raises(ValueError, match="max_conditioning_rows"):
-        qwen.QwenMemorySettings(max_conditioning_rows=0).validate()
-    with pytest.raises(ValueError, match="preflight_safety_mib"):
-        qwen.QwenMemorySettings(preflight_safety_mib=-1).validate()
-    with pytest.raises(ValueError, match="offload_mode"):
-        qwen.QwenMemorySettings(offload_mode="fast").validate()
-    assert qwen.QwenMemorySettings(offload_mode="prefetch").offload_streams == 2
-    assert qwen.QwenMemorySettings(offload_mode="extreme").offload_streams == 0
+def _image(rows: int = 1):
+    side = 32 * int(rows**0.5)
+    return torch.empty((1, side, side, 3), device="meta")
 
 
-def test_768p_video_blocks_match_measured_presentation():
-    video_block = torch.empty((2, 768, 1344, 3), device="meta")
-    assert qwen.qwen_vision_merged_rows(video_block) == 1008
-
-    entries = [(1, 1.0) for _ in range(237)]
-    entries.extend(
-        (
-            {
-                "type": "image",
-                "data": video_block,
-                "minimax_video_block": True,
-            },
-            1.0,
-        )
-        for _ in range(11)
+def test_settings_validate_low_vram_defaults():
+    settings = qwen.QwenSeqAttnSettings()
+    settings.validate()
+    assert settings == qwen.QwenSeqAttnSettings(
+        q_chunk_tokens=5760,
+        kv_chunk_tokens=4096,
+        qkv_tile_tokens=4096,
+        mlp_tile_tokens=4096,
     )
-    plan = qwen.inspect_qwen_input_tokens({"qwen3vl_32b": [entries]})
-
-    assert plan["non_visual_rows"] == 237
-    assert plan["video_rows"] == 11088
-    assert plan["total_rows"] == 11325
 
 
-def test_mixed_text_image_video_and_embedding_rows():
-    image = torch.empty((1, 768, 1344, 3), device="meta")
-    video_block = torch.empty((2, 768, 1344, 3), device="meta")
-    embedding = torch.empty((1, 5, 5120), device="meta")
-    entries = [(1, 1.0) for _ in range(10)]
-    entries.extend(
-        [
-            ({"type": "image", "data": image}, 1.0),
-            (
-                {
-                    "type": "image",
-                    "data": video_block,
-                    "minimax_video_block": True,
-                },
-                1.0,
-            ),
-            ({"type": "embedding", "data": embedding}, 1.0),
+def test_settings_read_qwen_tiles_from_shared_config(tmp_path, monkeypatch):
+    config = tmp_path / "seqattn.toml"
+    config.write_text(
+        "[minimax_h3_qwen]\n"
+        "qkv_tile_tokens = 96\n"
+        "mlp_tile_tokens = 48\n"
+    )
+    monkeypatch.setenv("SEQATTN_CONFIG", str(config))
+
+    settings = qwen.QwenSeqAttnSettings.from_config(
+        q_chunk_tokens=320,
+        kv_chunk_tokens=640,
+    )
+
+    assert settings == qwen.QwenSeqAttnSettings(
+        q_chunk_tokens=320,
+        kv_chunk_tokens=640,
+        qkv_tile_tokens=96,
+        mlp_tile_tokens=48,
+    )
+
+
+def test_preflight_has_no_presentation_row_limit():
+    controller = object.__new__(qwen.QwenSeqAttnController)
+    controller.settings = qwen.QwenSeqAttnSettings()
+    embedding = torch.empty((1, 30000, 5120), device="meta")
+    tokens = [[({"type": "embedding", "data": embedding}, 1.0)]]
+
+    layout = controller.preflight(tokens)
+
+    assert layout.total_rows == 30000
+
+
+def test_layout_preserves_visual_order_tags_and_embedding_rows():
+    image_a = _image()
+    image_b = _image()
+    embedding = torch.empty((1, 3, 5120), device="meta")
+    tokens = {
+        "qwen3vl_32b": [
+            [
+                (101, 1.0),
+                (151652, 1.0),
+                ({"type": "image", "data": image_a}, 1.0),
+                (151653, 1.0),
+                (202, 1.0),
+                ({"type": "embedding", "data": embedding}, 1.0),
+                (151652, 1.0),
+                ({"type": "image", "data": image_b}, 1.0),
+                (151653, 1.0),
+            ]
         ]
-    )
-
-    plan = qwen.inspect_qwen_input_tokens({"qwen3vl_32b": [entries]})
-
-    assert plan == {
-        "non_visual_rows": 10,
-        "image_rows": 1008,
-        "video_rows": 1008,
-        "visual_rows": 2016,
-        "embedding_rows": 5,
-        "total_rows": 2031,
     }
 
+    layout = qwen.build_qwen_presentation_layout(tokens)
 
-@pytest.mark.parametrize(
-    ("total_rows", "visual_rows", "expected_mib", "fits_default_limit"),
-    [
-        (21388, 21168, 5655.748626708984, True),
-        (22405, 22176, 5928.87060546875, False),
-    ],
-)
-def test_bf16_default_limit_matches_measured_prefetch_boundary(
-    total_rows, visual_rows, expected_mib, fits_default_limit
-):
-    settings = qwen.QwenMemorySettings()
-    estimated, with_safety = qwen.estimate_qwen_activation(
-        {"total_rows": total_rows, "visual_rows": visual_rows},
-        settings,
-        hidden_features=5120,
-        intermediate_features=25600,
+    assert layout.total_rows == 17
+    assert layout.visual_rows == 8
+    assert [(span.start, span.stop) for span in layout.visual_spans] == [
+        (2, 6),
+        (12, 16),
+    ]
+    assert layout.token_tags == (
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     )
-
-    assert estimated == pytest.approx(expected_mib)
-    assert (with_safety <= settings.activation_limit_mib) is fits_default_limit
+    assert qwen.packed_vision_cu_seqlens(layout).tolist() == [0, 16, 32]
 
 
-def test_bf16_measured_baseline_reproduces_recorded_plan():
-    estimated, _ = qwen.estimate_qwen_activation(
-        {"total_rows": 11325, "visual_rows": 11088},
-        qwen.QwenMemorySettings(),
-        hidden_features=5120,
-        intermediate_features=25600,
+def test_deepstack_cpu_injection_maps_each_visual_span():
+    first = qwen.QwenInputSpan("visual", 1, 3, object())
+    second = qwen.QwenInputSpan("visual", 5, 6, object())
+    visuals = [
+        qwen.PreparedVisual(first, torch.empty(0), 0, 8, 0, 2),
+        qwen.PreparedVisual(second, torch.empty(0), 8, 12, 2, 3),
+    ]
+    hidden = torch.zeros((7, 4), dtype=torch.bfloat16)
+    deepstack = torch.arange(12, dtype=torch.float32).reshape(3, 4).to(torch.bfloat16)
+
+    qwen.inject_deepstack_cpu_(hidden, deepstack, visuals, chunk_tokens=1)
+
+    torch.testing.assert_close(hidden[1:3], deepstack[:2])
+    torch.testing.assert_close(hidden[5:6], deepstack[2:3])
+    assert torch.count_nonzero(hidden[[0, 3, 4, 6]]) == 0
+
+
+def test_encode_releases_ephemeral_runtime(monkeypatch):
+    controller = object.__new__(qwen.QwenSeqAttnController)
+    controller.settings = qwen.QwenSeqAttnSettings()
+    controller.clip = SimpleNamespace(
+        patcher=SimpleNamespace(load_device=torch.device("cuda"))
     )
-
-    assert estimated == pytest.approx(3159.71240234375)
-
-
-def test_25000_rows_is_a_hard_cap_not_a_memory_guarantee():
-    settings = qwen.QwenMemorySettings()
-    _, with_safety = qwen.estimate_qwen_activation(
-        {"total_rows": 25000, "visual_rows": 25000},
-        settings,
-        hidden_features=5120,
-        intermediate_features=25600,
+    controller.decoder = object()
+    controller._active_runtime = None
+    controller.last_encode_stats = None
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        torch.cuda,
+        "empty_cache",
+        lambda: pytest.fail("Qwen encode must not force allocator cache cleanup"),
     )
-
-    assert with_safety > settings.activation_limit_mib
-
-
-def test_preflight_rejects_oversized_plan_before_encode(monkeypatch):
     monkeypatch.setattr(
         qwen,
-        "inspect_qwen_input_tokens",
-        lambda _tokens: {
-            "non_visual_rows": 229,
-            "image_rows": 22176,
-            "video_rows": 0,
-            "visual_rows": 22176,
-            "embedding_rows": 0,
-            "total_rows": 22405,
-        },
+        "_encode_vision",
+        lambda *_args: (None, [], [], 1),
     )
-    controller = object.__new__(qwen.QwenBF16Controller)
-    controller.settings = qwen.QwenMemorySettings()
-    controller.decoder = SimpleNamespace(
-        get_input_embeddings=lambda: SimpleNamespace(
-            weight=torch.empty((1, 5120), device="meta")
-        )
+    monkeypatch.setattr(
+        qwen,
+        "_encode_decoder",
+        lambda *_args: (torch.zeros((1, 5120), dtype=torch.bfloat16), 1),
     )
-    controller.layers = [
-        SimpleNamespace(mlp=SimpleNamespace(gate_proj=SimpleNamespace(out_features=25600)))
-    ]
-    controller._local = SimpleNamespace(encoding=False)
-    encoded = False
 
-    def operation():
-        nonlocal encoded
-        encoded = True
+    hidden, attention_mask, token_tags = controller.encode([[1]])
 
-    with pytest.raises(RuntimeError, match="Qwen input rejected before encode"):
-        controller._run_encode(object(), operation)
-
-    assert not encoded
-
-
-def test_patch_requires_cuda_clip_loader():
-    clip = SimpleNamespace(patcher=SimpleNamespace(load_device=torch.device("cpu")))
-    with pytest.raises(ValueError, match="device='default'"):
-        qwen.patch_minimax_h3_qwen_clip(
-            clip,
-            activation_limit_mib=5888,
-            max_conditioning_rows=25000,
-            preflight_safety_mib=128,
-            offload_mode="prefetch",
-        )
-
-
-@pytest.mark.parametrize(
-    ("mode", "expected_streams"), [("prefetch", 2), ("extreme", 0)]
-)
-def test_encoding_policy_selects_and_restores_streams(mode, expected_streams):
-    import comfy.model_management as model_management
-
-    controller = object.__new__(qwen.QwenBF16Controller)
-    controller.settings = qwen.QwenMemorySettings(offload_mode=mode)
-    original_vram_state = model_management.vram_state
-    original_streams = model_management.NUM_STREAMS
-
-    with controller._encoding_policy():
-        assert model_management.vram_state == model_management.VRAMState.NO_VRAM
-        assert model_management.NUM_STREAMS == expected_streams
-
-    assert model_management.vram_state == original_vram_state
-    assert model_management.NUM_STREAMS == original_streams
+    assert hidden.shape == (1, 5120)
+    assert attention_mask.tolist() == [1]
+    assert token_tags.tolist() == [1]
+    assert controller._active_runtime is None
+    assert controller.last_encode_stats == {
+        "runtime_released": True,
+        "vision_max_staged": 1,
+        "decoder_max_staged": 1,
+    }

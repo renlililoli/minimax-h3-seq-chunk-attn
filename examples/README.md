@@ -57,6 +57,11 @@ The runner verifies that `COMFYUI_DIR` is exactly commit
 the checkout differs. It initializes DynamicVRAM before importing PyTorch, so
 the scripts do not require a separate AIMDO bootstrap command.
 
+The example runner uses the same independent Qwen, DiT, and video VAE patch
+APIs as the bundled workflows. Qwen and DiT Q/KV chunks are explicit runner
+arguments; projection/MLP tiles and VAE settings come from `SEQATTN_CONFIG` or
+the default `~/.config/seqattn/config.toml`.
+
 ## Scenarios
 
 | Script | Mode | Input | Output scale |
@@ -71,6 +76,9 @@ Useful overrides are passed directly to the Python runner:
 ```bash
 ./examples/run_t2va_2step.sh --seed 123 --target-vram-mib 8192
 ./examples/run_ref2va_video_2step.sh --prompt "Use <Video 1> ..."
+./examples/run_t2va_2step.sh \
+  --qwen-q-chunk-tokens 5760 --qwen-kv-chunk-tokens 4096 \
+  --dit-q-chunk-tokens 5760 --dit-kv-chunk-tokens 4096
 ```
 
 Audio decoding defaults to CPU so the complete pipeline, including media
@@ -115,8 +123,10 @@ two-step checks, not throughput benchmarks.
 Every run recorded two forwards, 100 blocks, and 500 weight-scheduler lifecycle
 events with at most two staged blocks. The shared settings were
 `q_chunk_tokens=5760` and 4,096 tokens for the K/V, QKV projection, and MLP
-tiles. The per-scenario JSON remains the source of truth for phase timings,
-Qwen preflight, refiner counters, and memory details.
+tiles. These August 25, 2026 artifacts predate the new Qwen SeqAttn path and do
+not validate its tuning or memory behavior. The per-scenario JSON remains the
+source of truth for the historical phase timings, refiner counters, and memory
+details.
 
 ## Result Files
 

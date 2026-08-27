@@ -75,12 +75,22 @@ backend = "auto"
 [minimax_h3]
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
+
+[minimax_h3_qwen]
+qkv_tile_tokens = 4096
+mlp_tile_tokens = 4096
+
+[minimax_h3_vae]
+tile_size = 192
+workspace_mib = 512
 ```
 
-`q_chunk_tokens` and `kv_chunk_tokens` remain inputs on the ComfyUI SeqAttn
-node, so they are serialized with the workflow. The RTX 5090 single-NUMA
-default is Q `5760` and K/V `4096`; do not change Q solely because the Docker
-image changed.
+Connecting a Qwen, DiT, or video VAE patch node selects streaming for that
+stage; wiring around it keeps the native implementation. The Qwen and DiT
+nodes each expose their own Q/KV chunks, while projection/MLP tiles and VAE
+settings come from this TOML file. The shipped Qwen values currently reuse the
+RTX 5090 DiT values and are not presented as an independently calibrated Qwen
+optimum.
 
 The empty `COMFYUI_RESERVE_VRAM_GIB` and `COMFYUI_VRAM_HEADROOM_GIB` values are
 intentional. They leave whole-process memory policy to the pinned ComfyUI

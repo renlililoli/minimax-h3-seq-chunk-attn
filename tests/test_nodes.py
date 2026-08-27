@@ -91,23 +91,35 @@ def test_model_type_validation():
     with pytest.raises(TypeError, match="MiniMaxH3Model"):
         nodes.patch_minimax_h3_model(
             FakePatcher(object()),
-            q_chunk_tokens=4096,
+            q_chunk_tokens=5760,
             kv_chunk_tokens=4096,
         )
+
+
+def test_patch_node_schemas_select_backend_and_expose_q_kv_chunks():
+    assert [item.id for item in nodes.MiniMaxH3SeqAttn.define_schema().inputs] == [
+        "model",
+        "q_chunk_tokens",
+        "kv_chunk_tokens",
+    ]
+    assert [item.id for item in nodes.MiniMaxH3QwenSeqAttn.define_schema().inputs] == [
+        "clip",
+        "q_chunk_tokens",
+        "kv_chunk_tokens",
+    ]
+    assert [item.id for item in nodes.MiniMaxH3VAEStreaming.define_schema().inputs] == [
+        "vae"
+    ]
 
 
 def test_patch_is_clone_isolated_and_idempotent():
     diffusion_model = object.__new__(MiniMaxH3Model)
     original = FakePatcher(diffusion_model)
     first = nodes.patch_minimax_h3_model(
-        original,
-        q_chunk_tokens=4096,
-        kv_chunk_tokens=4096,
+        original, q_chunk_tokens=3840, kv_chunk_tokens=2048
     )
     second = nodes.patch_minimax_h3_model(
-        first,
-        q_chunk_tokens=2048,
-        kv_chunk_tokens=8192,
+        first, q_chunk_tokens=5760, kv_chunk_tokens=4096
     )
 
     assert nodes.STATE_KEY not in original.model_options["transformer_options"]
@@ -118,13 +130,15 @@ def test_patch_is_clone_isolated_and_idempotent():
     first_runtime = first.model_options["transformer_options"][nodes.STATE_KEY]
     second_runtime = second.model_options["transformer_options"][nodes.STATE_KEY]
     assert first_runtime is not second_runtime
-    assert second_runtime.settings.q_chunk_tokens == 2048
+    assert first_runtime.settings.q_chunk_tokens == 3840
+    assert first_runtime.settings.kv_chunk_tokens == 2048
+    assert second_runtime.settings.q_chunk_tokens == 5760
 
 
 def test_clone_and_cleanup_callbacks_manage_runtime():
     patched = nodes.patch_minimax_h3_model(
         FakePatcher(object.__new__(MiniMaxH3Model)),
-        q_chunk_tokens=4096,
+        q_chunk_tokens=5760,
         kv_chunk_tokens=4096,
     )
     cloned = patched.clone()
@@ -139,30 +153,35 @@ def test_clone_and_cleanup_callbacks_manage_runtime():
     assert runtime.cache_size == 0
 
 
-def test_video_vae_tile_size_validation_and_patch():
+def test_video_vae_tile_size_validation_and_patch(tmp_path, monkeypatch):
     vae = _fake_video_vae()
 
     original_encode = vae.encode
-    patched = nodes.patch_minimax_h3_video_vae(
-        vae, tile_size=192, workspace_mib=512
+    config_path = tmp_path / "seqattn.toml"
+    config_path.write_text(
+        "[minimax_h3_vae]\ntile_size = 192\nworkspace_mib = 512\n"
     )
+    monkeypatch.setenv("SEQATTN_CONFIG", str(config_path))
+    patched = nodes.patch_minimax_h3_video_vae(vae)
 
     assert patched is not vae
     assert patched.patcher is not vae.patcher
     assert vae.first_stage_model.tile_size == 256
     assert vae.encode is original_encode
     assert patched.encode is not original_encode
-    repatched = nodes.patch_minimax_h3_video_vae(
-        patched, tile_size=160, workspace_mib=768
+    config_path.write_text(
+        "[minimax_h3_vae]\ntile_size = 160\nworkspace_mib = 768\n"
     )
+    repatched = nodes.patch_minimax_h3_video_vae(patched)
     assert repatched is not patched
     assert repatched.encode is not patched.encode
     assert getattr(repatched, vae_mod.STATE_KEY).tile_size == 160
     assert vae.first_stage_model.tile_size == 256
     with pytest.raises(ValueError, match="divisible"):
-        nodes.patch_minimax_h3_video_vae(
-            vae, tile_size=190, workspace_mib=512
+        config_path.write_text(
+            "[minimax_h3_vae]\ntile_size = 190\nworkspace_mib = 512\n"
         )
+        nodes.patch_minimax_h3_video_vae(vae)
     vae_mod.unpatch_minimax_h3_video_vae(patched)
     assert vae.encode is original_encode
 
@@ -180,9 +199,7 @@ def test_video_vae_single_frame_decode_matches_native_and_restores_tile(
         return latent
 
     object.__setattr__(model, "_adaptive_decode", adaptive_decode)
-    patched = nodes.patch_minimax_h3_video_vae(
-        vae, tile_size=192, workspace_mib=512
-    )
+    patched = nodes.patch_minimax_h3_video_vae(vae)
     controller = getattr(patched, vae_mod.STATE_KEY)
     load_inference_modes = []
     monkeypatch.setattr(
@@ -213,27 +230,23 @@ def test_video_vae_single_frame_decode_matches_native_and_restores_tile(
     assert load_inference_modes == [False]
 
 
-def test_video_vae_patched_branches_are_isolated():
+def test_video_vae_patched_branches_are_isolated(tmp_path, monkeypatch):
     vae = _fake_video_vae()
-    first = nodes.patch_minimax_h3_video_vae(
-        vae, tile_size=192, workspace_mib=512
+    config_path = tmp_path / "seqattn.toml"
+    config_path.write_text(
+        "[minimax_h3_vae]\ntile_size = 192\nworkspace_mib = 512\n"
     )
-    second = nodes.patch_minimax_h3_video_vae(
-        vae, tile_size=160, workspace_mib=768
+    monkeypatch.setenv("SEQATTN_CONFIG", str(config_path))
+    first = nodes.patch_minimax_h3_video_vae(vae)
+    config_path.write_text(
+        "[minimax_h3_vae]\ntile_size = 160\nworkspace_mib = 768\n"
     )
+    second = nodes.patch_minimax_h3_video_vae(vae)
 
     assert first is not second
     assert first.patcher is not second.patcher
     assert getattr(first, vae_mod.STATE_KEY).tile_size == 192
     assert getattr(second, vae_mod.STATE_KEY).tile_size == 160
-    disabled = nodes.MiniMaxH3VAEStreaming.execute(
-        first,
-        tile_size=128,
-        workspace_mib=256,
-        enabled=False,
-    ).result[0]
-    assert disabled is first
-    assert hasattr(first, vae_mod.STATE_KEY)
     vae_mod.unpatch_minimax_h3_video_vae(first)
     assert not hasattr(first, vae_mod.STATE_KEY)
     assert hasattr(second, vae_mod.STATE_KEY)
@@ -243,9 +256,7 @@ def test_video_vae_patched_branches_are_isolated():
 def test_video_vae_tile_size_rejects_other_vae_types():
     with pytest.raises(TypeError, match="MiniMax H3 video VAE"):
         nodes.patch_minimax_h3_video_vae(
-            SimpleNamespace(first_stage_model=object()),
-            tile_size=192,
-            workspace_mib=512,
+            SimpleNamespace(first_stage_model=object())
         )
 
 

@@ -543,7 +543,7 @@
     },
     {
       "id": 142,
-      "type": "MiniMaxH3QwenBF16Offload",
+      "type": "MiniMaxH3QwenSeqAttn",
       "pos": [
         -800,
         4850
@@ -574,14 +574,11 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "MiniMaxH3QwenBF16Offload"
+        "Node name for S&R": "MiniMaxH3QwenSeqAttn"
       },
       "widgets_values": [
-        5888,
-        25000,
-        128,
-        "prefetch",
-        true
+        5760,
+        4096
       ]
     },
     {
@@ -952,7 +949,7 @@
       ],
       "size": [
         360,
-        178
+        60
       ],
       "flags": {},
       "order": 7,
@@ -979,8 +976,7 @@
       },
       "widgets_values": [
         5760,
-        4096,
-        true
+        4096
       ]
     },
     {
@@ -992,7 +988,7 @@
       ],
       "size": [
         360,
-        82
+        60
       ],
       "flags": {},
       "order": 5,
@@ -1017,11 +1013,7 @@
       "properties": {
         "Node name for S&R": "MiniMaxH3VAEStreaming"
       },
-      "widgets_values": [
-        192,
-        512,
-        true
-      ]
+      "widgets_values": []
     }
   ],
   "links": [

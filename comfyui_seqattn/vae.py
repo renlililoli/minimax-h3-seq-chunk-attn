@@ -7,6 +7,8 @@ import types
 import torch
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
+from .config import load_vae_stage_config
+
 STATE_KEY = "_minimax_h3_seqattn_vae_controller"
 
 
@@ -245,7 +247,7 @@ def _clone_vae_wrapper(vae):
     return cloned
 
 
-def patch_minimax_h3_video_vae(vae, *, tile_size: int, workspace_mib: int):
+def patch_minimax_h3_video_vae(vae):
     model = getattr(vae, "first_stage_model", None)
     if not isinstance(model, MiniMaxH3VideoVAE):
         actual = type(model).__name__ if model is not None else "None"
@@ -254,8 +256,11 @@ def patch_minimax_h3_video_vae(vae, *, tile_size: int, workspace_mib: int):
             f"received {actual}"
         )
     patched = _clone_vae_wrapper(vae)
+    config = load_vae_stage_config()
     controller = MiniMaxH3VAEController(
-        patched, tile_size=tile_size, workspace_mib=workspace_mib
+        patched,
+        tile_size=config.tile_size,
+        workspace_mib=config.workspace_mib,
     )
     controller.install()
     return patched

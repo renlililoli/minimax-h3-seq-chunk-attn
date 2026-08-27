@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Add a separate MiniMax-H3 Qwen SeqAttn node with CPU-backed vision and
+  decoder hidden/Q/K/V, packed non-causal vision attention, causal decoder GQA,
+  tiled vision mergers, and CPU DeepStack injection.
+- Generalize the DiT current-plus-next Dynamic VBAR weight pipeline to support
+  Qwen vision and decoder module-group stages.
+- Remove the old activation-estimate-based Qwen BF16 offload node and switch
+  bundled workflows and clean-install examples to the single streaming encode
+  path.
+- Make Qwen, DiT, and video VAE streaming independent patch nodes. Connecting
+  a node selects streaming for that stage; bypassing it keeps the native
+  ComfyUI implementation.
+- Keep Q/KV chunks explicit and independent on the Qwen and DiT nodes; load
+  projection/MLP tiles and VAE tile/workspace settings from the shared SeqAttn
+  TOML configuration.
+
 ## 0.4.1 - 2026-08-25
 
 - Pin the supported ComfyUI runtime to version `0.30.0`, exact validation
