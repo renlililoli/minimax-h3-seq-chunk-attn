@@ -7,6 +7,10 @@
   tiled vision mergers, and CPU DeepStack injection.
 - Generalize the DiT current-plus-next Dynamic VBAR weight pipeline to support
   Qwen vision and decoder module-group stages.
+- Materialize first-use loaded-weight host pins before VBAR prefetch so cold-start
+  Qwen, vision, and DiT stages cannot execute with incomplete GPU weights.
+- Gather and dequantize only unique decoder token-embedding rows on the CPU, and
+  reject non-finite or all-zero conditioning before ComfyUI can cache it.
 - Remove the old activation-estimate-based Qwen BF16 offload node and switch
   bundled workflows and clean-install examples to the single streaming encode
   path.

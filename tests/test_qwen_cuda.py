@@ -315,6 +315,13 @@ def test_decoder_causal_gqa_mrope_and_three_cpu_deepstack_injections(monkeypatch
         expected[2].add_(deepstack[index][0].to(device))
 
     monkeypatch.setattr(qwen, "run_weight_stages", _resident_stages)
+    monkeypatch.setattr(
+        qwen,
+        "_embed_token_rows_cpu",
+        lambda module, token_ids, dtype: module(token_ids.to(device)).to(
+            device="cpu", dtype=dtype
+        ),
+    )
     runtime = qwen.QwenEncodeRuntime(
         qwen.QwenSeqAttnSettings(
             q_chunk_tokens=128,

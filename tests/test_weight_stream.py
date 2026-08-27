@@ -28,6 +28,71 @@ def test_plain_blocks_require_dynamic_vbar(monkeypatch):
         streamer.prepare(0)
 
 
+def test_materialize_loaded_weight_pin_before_gpu_prefetch(monkeypatch):
+    module = torch.nn.Linear(2, 2, bias=False)
+    pins = {}
+    calls = []
+
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.pinned_memory,
+        "get_pin",
+        lambda _module, subset="weights": pins.get(subset),
+    )
+
+    def pin_memory(_module, subset="weights", size=None):
+        calls.append(("pin", subset, size))
+        pins[subset] = torch.empty(size, dtype=torch.uint8)
+
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.pinned_memory, "pin_memory", pin_memory
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.memory_management,
+        "vram_aligned_size",
+        lambda _parameters: 32,
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.model_management,
+        "cast_to_gathered",
+        lambda parameters, pin, **kwargs: calls.append(
+            ("materialize", parameters, pin, kwargs)
+        ),
+    )
+
+    materialized = weight_stream_mod._materialize_loaded_weight_pins([module])
+
+    assert materialized == 32
+    assert calls[0] == ("pin", "weights-loaded", 32)
+    assert calls[1][0] == "materialize"
+    assert calls[1][1] == [module.weight]
+    assert calls[1][2] is pins["weights-loaded"]
+    assert calls[1][3] == {"non_blocking": False, "stream": None}
+
+
+def test_materialize_loaded_weight_pin_reuses_existing_pin(monkeypatch):
+    module = torch.nn.Linear(2, 2, bias=False)
+    existing = torch.empty(1, dtype=torch.uint8)
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.pinned_memory,
+        "get_pin",
+        lambda _module, subset="weights": existing
+        if subset == "weights"
+        else None,
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.pinned_memory,
+        "pin_memory",
+        lambda *_args, **_kwargs: pytest.fail("existing pin must be reused"),
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.model_management,
+        "cast_to_gathered",
+        lambda *_args, **_kwargs: pytest.fail("existing pin is already materialized"),
+    )
+
+    assert weight_stream_mod._materialize_loaded_weight_pins([module]) == 0
+
+
 def test_weight_streamer_enforces_current_plus_next_limit(monkeypatch):
     class FakeVbar:
         def loaded_size(self):

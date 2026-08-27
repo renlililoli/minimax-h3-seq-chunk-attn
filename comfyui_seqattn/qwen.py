@@ -612,27 +612,48 @@ def _encode_vision(
     return merged, deepstack, batch.visuals, max_staged
 
 
+def _embed_token_rows_cpu(
+    module, token_ids: torch.Tensor, dtype: torch.dtype
+) -> torch.Tensor:
+    import comfy.quant_ops as quant_ops
+
+    weight = module.weight
+    if (
+        not isinstance(weight, quant_ops.QuantizedTensor)
+        or getattr(module, "quant_format", None) != "int8_tensorwise"
+        or len(getattr(module, "weight_function", ())) != 0
+    ):
+        raise RuntimeError(
+            "MiniMax H3 Qwen CPU embedding requires the native unpatched "
+            "int8_tensorwise embedding table"
+        )
+    layout = quant_ops.get_layout_class(module.layout_type)
+    return layout.dequantize_embedding(
+        weight._qdata,
+        weight._params,
+        token_ids.to(device="cpu"),
+    ).to(device="cpu", dtype=dtype)
+
+
 def _fill_decoder_hidden(
     decoder,
     layout: QwenPresentationLayout,
     visuals: list[PreparedVisual],
     merged_visual: torch.Tensor | None,
     hidden: torch.Tensor,
-    device: torch.device,
-    tile_tokens: int,
 ) -> None:
     token_spans = [span for span in layout.spans if span.kind == "token"]
     if token_spans:
         token_ids = torch.tensor([int(span.entry) for span in token_spans], dtype=torch.long)
         token_rows = torch.tensor([span.start for span in token_spans], dtype=torch.long)
+        unique_ids, inverse = torch.unique(
+            token_ids, sorted=False, return_inverse=True
+        )
+        unique_rows = _embed_token_rows_cpu(
+            decoder.model.embed_tokens, unique_ids, hidden.dtype
+        )
         embedded_host = _pinned_empty((len(token_spans), hidden.shape[1]), hidden.dtype)
-        with _lease_group(decoder.model.embed_tokens):
-            for start in range(0, len(token_spans), tile_tokens):
-                stop = min(start + tile_tokens, len(token_spans))
-                ids = token_ids[start:stop].to(device=device)
-                embedded = decoder.model.embed_tokens(ids, out_dtype=hidden.dtype)
-                embedded_host[start:stop].copy_(embedded, non_blocking=True)
-        torch.cuda.current_stream(device).synchronize()
+        embedded_host.copy_(unique_rows.index_select(0, inverse))
         hidden.index_copy_(0, token_rows, embedded_host)
 
     for span in layout.spans:
@@ -743,6 +764,13 @@ def _encode_decoder(
     hidden = _pinned_empty(
         (layout.total_rows, model.config.hidden_size), torch.bfloat16
     )
+    _fill_decoder_hidden(
+        decoder,
+        layout,
+        visuals,
+        merged_visual,
+        hidden,
+    )
     position_ids = _decoder_position_ids(layout, visuals)
     first_attention = model.layers[0].self_attn
     runner = runtime.runner(
@@ -755,22 +783,11 @@ def _encode_decoder(
     sequence_meta = H3SequenceMeta(
         cu_seqlens=torch.tensor([0, layout.total_rows], dtype=torch.int32)
     )
-    stages = [(model.embed_tokens,), *[(layer,) for layer in model.layers]]
+    stages = [(layer,) for layer in model.layers]
 
     def compute(stage_index: int):
-        if stage_index == 0:
-            _fill_decoder_hidden(
-                decoder,
-                layout,
-                visuals,
-                merged_visual,
-                hidden,
-                device,
-                runtime.settings.qkv_tile_tokens,
-            )
-            return
-        layer_index = stage_index - 1
-        layer = model.layers[layer_index]
+        layer_index = stage_index
+        layer = model.layers[stage_index]
         runner.run_block_(
             hidden,
             sequence_meta,
@@ -792,6 +809,17 @@ def _encode_decoder(
     finally:
         runtime.release_runner(runner)
     return hidden, max_staged
+
+
+def _validate_conditioning_hidden(hidden: torch.Tensor) -> None:
+    if not bool(torch.isfinite(hidden).all()):
+        raise RuntimeError(
+            "MiniMax H3 Qwen SeqAttn produced non-finite conditioning"
+        )
+    if int(torch.count_nonzero(hidden)) == 0:
+        raise RuntimeError(
+            "MiniMax H3 Qwen SeqAttn produced all-zero conditioning"
+        )
 
 
 class QwenSeqAttnController:
@@ -934,6 +962,7 @@ class QwenSeqAttnController:
                 visuals,
                 runtime,
             )
+            _validate_conditioning_hidden(hidden)
             attention_mask = torch.tensor(layout.attention_mask, dtype=torch.long)
             token_tags = torch.tensor(layout.token_tags, dtype=torch.long)
             return hidden, attention_mask, token_tags

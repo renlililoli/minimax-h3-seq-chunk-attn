@@ -8,6 +8,7 @@ from typing import Any, Callable
 import comfy.memory_management
 import comfy.model_management
 import comfy.ops
+import comfy.pinned_memory
 import comfy_aimdo.model_vbar
 import torch
 
@@ -33,6 +34,42 @@ def _vbar_modules(stage) -> list:
             seen.add(id(child))
             modules.append(child)
     return modules
+
+
+def _materialize_loaded_weight_pins(modules: list) -> int:
+    materialized_bytes = 0
+    for module in modules:
+        parameters = [
+            parameter
+            for parameter in (
+                getattr(module, "weight", None),
+                getattr(module, "bias", None),
+            )
+            if parameter is not None
+        ]
+        if not parameters:
+            continue
+        if (
+            comfy.pinned_memory.get_pin(module, subset="weights") is not None
+            or comfy.pinned_memory.get_pin(module, subset="weights-loaded")
+            is not None
+        ):
+            continue
+        size = comfy.memory_management.vram_aligned_size(parameters)
+        comfy.pinned_memory.pin_memory(
+            module, subset="weights-loaded", size=size
+        )
+        pin = comfy.pinned_memory.get_pin(module, subset="weights-loaded")
+        if pin is None:
+            raise RuntimeError(
+                "SeqAttn could not allocate a loaded-weight pin for "
+                f"{type(module).__name__}"
+            )
+        comfy.model_management.cast_to_gathered(
+            parameters, pin, non_blocking=False, stream=None
+        )
+        materialized_bytes += size
+    return materialized_bytes
 
 
 def _registerable_size(modules: list) -> int:
@@ -154,6 +191,7 @@ class BlockWeightStreamer:
             )
 
         registerable_bytes = _registerable_size(modules)
+        materialized_bytes = _materialize_loaded_weight_pins(modules)
         stream = None
         if modules:
             stream = comfy.ops.cast_modules_with_vbar(
@@ -186,6 +224,7 @@ class BlockWeightStreamer:
             state,
             module_count=len(modules),
             registerable_mib=registerable_bytes / 2**20,
+            materialized_mib=materialized_bytes / 2**20,
             staged_mib=staged_bytes / 2**20,
         )
         return state

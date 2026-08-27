@@ -119,11 +119,17 @@ DeepStack features in pinned CPU memory. GPU execution is limited to configured
 projection, attention, merger, output-projection, residual, and MLP tiles. It
 uses packed non-causal vision attention and causal decoder GQA without building
 a quadratic causal mask. DeepStack is injected directly into CPU hidden after
-each of the first three decoder layers.
+each of the first three decoder layers. Decoder token embedding stays on the CPU:
+only unique token rows are gathered and dequantized from the mmap-backed INT8
+table before they are written into the final pinned hidden tensor.
 
 Qwen uses the same current-plus-next Dynamic VBAR weight pipeline as the DiT
-path. It does not impose an artificial presentation-length limit; pinned host
-allocations, attention work, and runtime still scale with the actual text,
+path. Before a stage is prefetched to the GPU for the first time, its checkpoint
+data is synchronously materialized into the ComfyUI loaded-weight host pin. This
+keeps cold-start execution identical to later cached encodes instead of consuming
+an incomplete first VBAR transfer. It does not impose an artificial presentation-
+length limit; pinned host allocations, attention work, and runtime still scale
+with the actual text,
 image, and video input. Its node exposes the deployment-sensitive resident Q
 chunk and transferred K/V chunk independently from the DiT node:
 

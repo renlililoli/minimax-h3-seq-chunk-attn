@@ -46,6 +46,90 @@ def test_settings_read_qwen_tiles_from_shared_config(tmp_path, monkeypatch):
     )
 
 
+def test_cpu_embedding_dequantizes_only_requested_rows(monkeypatch):
+    import comfy.quant_ops as quant_ops
+
+    class FakeQuantizedTensor:
+        def __init__(self):
+            self._qdata = torch.arange(40, dtype=torch.int8).reshape(10, 4)
+            self._params = SimpleNamespace(scale=torch.tensor(0.5))
+
+    class FakeLayout:
+        @staticmethod
+        def dequantize_embedding(qdata, params, token_ids):
+            return qdata.index_select(0, token_ids).float() * params.scale
+
+    monkeypatch.setattr(quant_ops, "QuantizedTensor", FakeQuantizedTensor)
+    monkeypatch.setattr(quant_ops, "get_layout_class", lambda _name: FakeLayout)
+    module = SimpleNamespace(
+        weight=FakeQuantizedTensor(),
+        quant_format="int8_tensorwise",
+        layout_type="fake",
+        weight_function=[],
+    )
+
+    result = qwen._embed_token_rows_cpu(
+        module, torch.tensor([7, 2], dtype=torch.long), torch.bfloat16
+    )
+
+    expected = module.weight._qdata[[7, 2]].float().mul(0.5).to(torch.bfloat16)
+    torch.testing.assert_close(result, expected)
+    assert result.device.type == "cpu"
+
+
+def test_fill_decoder_hidden_deduplicates_cpu_token_lookups(monkeypatch):
+    layout = qwen.QwenPresentationLayout(
+        spans=(
+            qwen.QwenInputSpan("token", 0, 1, 7),
+            qwen.QwenInputSpan("token", 1, 2, 3),
+            qwen.QwenInputSpan("token", 2, 3, 7),
+        ),
+        attention_mask=(1, 1, 1),
+        token_tags=(1, 1, 1),
+        total_rows=3,
+        visual_rows=0,
+    )
+    requested = []
+
+    def embed_rows(_module, token_ids, dtype):
+        requested.append(token_ids.tolist())
+        return token_ids[:, None].expand(-1, 4).to(dtype)
+
+    monkeypatch.setattr(qwen, "_embed_token_rows_cpu", embed_rows)
+    monkeypatch.setattr(
+        qwen,
+        "_pinned_empty",
+        lambda shape, dtype: torch.empty(shape, dtype=dtype),
+    )
+    hidden = torch.empty((3, 4), dtype=torch.bfloat16)
+    decoder = SimpleNamespace(model=SimpleNamespace(embed_tokens=object()))
+
+    qwen._fill_decoder_hidden(decoder, layout, [], None, hidden)
+
+    assert len(requested) == 1
+    assert sorted(requested[0]) == [3, 7]
+    torch.testing.assert_close(
+        hidden,
+        torch.tensor([[7] * 4, [3] * 4, [7] * 4], dtype=torch.bfloat16),
+    )
+
+
+@pytest.mark.parametrize(
+    "hidden, message",
+    [
+        (torch.zeros((2, 4), dtype=torch.bfloat16), "all-zero"),
+        (torch.tensor([[float("nan")]], dtype=torch.bfloat16), "non-finite"),
+    ],
+)
+def test_conditioning_validation_rejects_invalid_output(hidden, message):
+    with pytest.raises(RuntimeError, match=message):
+        qwen._validate_conditioning_hidden(hidden)
+
+
+def test_conditioning_validation_accepts_finite_nonzero_output():
+    qwen._validate_conditioning_hidden(torch.ones((2, 4), dtype=torch.bfloat16))
+
+
 def test_preflight_has_no_presentation_row_limit():
     controller = object.__new__(qwen.QwenSeqAttnController)
     controller.settings = qwen.QwenSeqAttnSettings()
@@ -171,7 +255,7 @@ def test_encode_releases_ephemeral_runtime(monkeypatch):
     monkeypatch.setattr(
         qwen,
         "_encode_decoder",
-        lambda *_args: (torch.zeros((1, 5120), dtype=torch.bfloat16), 1),
+        lambda *_args: (torch.ones((1, 5120), dtype=torch.bfloat16), 1),
     )
 
     hidden, attention_mask, token_tags = controller.encode([[1]])
