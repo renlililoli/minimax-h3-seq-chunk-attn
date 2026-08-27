@@ -67,15 +67,10 @@ clip contains the exact first 124 reference frames used by the run.
 | CPU RSS peak | **32,666 MiB** |
 | Output | **H.264 + AAC, 1344x768, 124 frames, 24 fps, 5.167 s** |
 
-![Phase-aware process GPU memory profile for the validated 0.4.0 run](docs/assets/community_v040_ref2va_video_20step_20260825_memory.png)
-
-The plot separates Torch allocations, unused Torch reservation, and the
-remaining process allocation reported by NVML. The last category includes
-DynamicVRAM/AIMDO mappings, VBAR-resident weights, CUDA context memory, and
-other non-Torch CUDA allocations; the available trace cannot split those
-subsources further. See the
-[full experiment record](docs/community_v040_ref2va_video_20step_20260825.md)
-for per-phase values and raw artifacts.
+The [full experiment record](docs/community_v040_ref2va_video_20step_20260825.md)
+retains the historical per-phase values and raw artifacts. Its Qwen memory
+profile belongs to the retired prefetch offload implementation and must not be
+used to describe the current Qwen SeqAttn path.
 
 <details>
 <summary><strong>Prompt and validation details</strong></summary>
