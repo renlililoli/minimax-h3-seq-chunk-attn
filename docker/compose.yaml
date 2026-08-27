@@ -7,6 +7,7 @@ services:
       target: runtime
       args:
         COMFYUI_BASE_IMAGE: ${COMFYUI_BASE_IMAGE}
+    user: "${HOST_UID}:${HOST_GID}"
     ports:
       - "${HOST_PORT}:${COMFYUI_PORT}"
     ipc: host
@@ -23,8 +24,10 @@ services:
               device_ids: ["${GPU_ID}"]
               capabilities: [gpu]
     environment:
+      HOME: /opt/ComfyUI/user
       COMFYUI_LISTEN: ${COMFYUI_LISTEN}
       COMFYUI_PORT: ${COMFYUI_PORT}
+      COMFYUI_TEMP_DIRECTORY: ${COMFYUI_TEMP_DIRECTORY}
       COMFYUI_ENABLE_DYNAMIC_VRAM: ${COMFYUI_ENABLE_DYNAMIC_VRAM}
       COMFYUI_DISABLE_NVML_PRESSURE: ${COMFYUI_DISABLE_NVML_PRESSURE}
       COMFYUI_DISABLE_ASYNC_OFFLOAD: ${COMFYUI_DISABLE_ASYNC_OFFLOAD}

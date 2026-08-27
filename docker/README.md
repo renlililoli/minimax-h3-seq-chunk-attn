@@ -19,6 +19,17 @@ Copy the environment template and edit the absolute host paths, GPU, and port:
 
 ```bash
 cp docker/.env.example docker/.env
+id -u
+id -g
+```
+
+Set `HOST_UID` and `HOST_GID` in `docker/.env` to the two values printed above.
+The container runs as that user so writable bind mounts also work on NFS homes
+with root squashing. Create the writable directories before the first start;
+Docker should not create them as root on the user's behalf:
+
+```bash
+mkdir -p /path/to/ComfyUI/input /path/to/ComfyUI/output /path/to/ComfyUI/user
 ```
 
 Runtime environment variables are kept in `docker/.env`; structured SeqAttn
@@ -63,7 +74,7 @@ Model weights are intentionally not copied into the image.
 `docker/.env` contains the deployment-level settings:
 
 - image name and pinned base image reference;
-- GPU selection, host port, and bind-mount paths;
+- GPU selection, host UID/GID, host port, and bind-mount paths;
 - ComfyUI DynamicVRAM, NVML pressure, async offload, reserve, and headroom;
 - CUDA module loading, PyTorch allocator, libc allocator, cache, and NVTX
   switches.

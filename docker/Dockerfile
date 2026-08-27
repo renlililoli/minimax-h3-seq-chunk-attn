@@ -24,6 +24,8 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libx11-6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN git config --system --add safe.directory /opt/ComfyUI
+
 RUN COMFYUI_VERSION="${COMFYUI_VERSION}" \
     COMFYUI_COMMIT="${COMFYUI_COMMIT}" \
     TORCH_VERSION="${TORCH_VERSION}" \

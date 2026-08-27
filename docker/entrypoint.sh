@@ -6,6 +6,7 @@ args=(
   main.py
   --listen "${COMFYUI_LISTEN:-0.0.0.0}"
   --port "${COMFYUI_PORT:-8188}"
+  --temp-directory "${COMFYUI_TEMP_DIRECTORY:-/opt/ComfyUI/user}"
 )
 
 if [[ -n "${COMFYUI_RESERVE_VRAM_GIB:-}" ]]; then

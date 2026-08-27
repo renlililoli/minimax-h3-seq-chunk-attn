@@ -19,6 +19,8 @@
 - Build the Compose service from the production `runtime` stage and document
   `up --build`, preventing stale or checks-stage images from starting as
   ComfyUI.
+- Run the Compose container as the configured host UID/GID so writable input,
+  output, user, and cache mounts work on NFS homes with root squashing.
 
 ## 0.4.1 - 2026-08-25
 
