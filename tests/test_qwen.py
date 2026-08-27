@@ -107,6 +107,29 @@ def test_layout_preserves_visual_order_tags_and_embedding_rows():
     assert qwen.packed_vision_cu_seqlens(layout).tolist() == [0, 16, 32]
 
 
+def test_each_two_frame_video_block_is_a_packed_vision_sequence():
+    first = {
+        "type": "image",
+        "data": torch.empty((2, 32, 64, 3), device="meta"),
+        "minimax_video_block": True,
+    }
+    second = {
+        "type": "image",
+        "data": torch.empty((2, 64, 64, 3), device="meta"),
+        "minimax_video_block": True,
+    }
+
+    layout = qwen.build_qwen_presentation_layout(
+        [[(151652, 1.0), (first, 1.0), (151653, 1.0), (second, 1.0)]]
+    )
+
+    assert [(span.start, span.stop) for span in layout.visual_spans] == [
+        (1, 7),
+        (8, 12),
+    ]
+    assert qwen.packed_vision_cu_seqlens(layout).tolist() == [0, 24, 40]
+
+
 def test_deepstack_cpu_injection_maps_each_visual_span():
     first = qwen.QwenInputSpan("visual", 1, 3, object())
     second = qwen.QwenInputSpan("visual", 5, 6, object())

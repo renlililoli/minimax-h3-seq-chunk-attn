@@ -365,13 +365,11 @@ def _prepare_visual_batch(layout: QwenPresentationLayout) -> PreparedVisionBatch
     patches_host = _pinned_empty((total_raw_rows, patch_features), torch.float32)
     grids = []
     visuals = []
-    bounds = [0]
     for span, patches, grid, raw_start, merged_start in prepared:
         raw_stop = raw_start + patches.shape[0]
         merged_stop = merged_start + (span.stop - span.start)
         patches_host[raw_start:raw_stop].copy_(patches)
         grids.append(grid)
-        bounds.append(raw_stop)
         visuals.append(
             PreparedVisual(
                 layout_span=span,

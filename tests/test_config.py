@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from comfyui_seqattn import config
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_missing_default_config_uses_compiled_stage_defaults(tmp_path, monkeypatch):
@@ -14,6 +18,13 @@ def test_missing_default_config_uses_compiled_stage_defaults(tmp_path, monkeypat
         "minimax_h3_qwen"
     ) == config.AttentionStageConfig()
     assert config.load_vae_stage_config() == config.VAEStageConfig()
+
+
+def test_python_310_declares_tomli_runtime_dependency():
+    with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as handle:
+        dependencies = config.tomllib.load(handle)["project"]["dependencies"]
+
+    assert "tomli>=1.1; python_version < '3.11'" in dependencies
 
 
 def test_explicit_missing_config_fails(tmp_path, monkeypatch):

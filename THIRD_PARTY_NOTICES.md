@@ -2,8 +2,9 @@
 
 ## ComfyUI
 
-The MiniMax-H3 integration in `comfyui_seqattn/minimax_h3.py` adapts the
-MiniMax-H3 model execution interfaces provided by ComfyUI.
+The MiniMax-H3 integration in `comfyui_seqattn/minimax_h3.py`,
+`comfyui_seqattn/qwen.py`, and `comfyui_seqattn/vae.py` adapts the MiniMax-H3
+model execution interfaces provided by ComfyUI.
 
 - Upstream: https://github.com/Comfy-Org/ComfyUI
 - License: GNU General Public License v3.0

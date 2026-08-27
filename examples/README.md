@@ -147,7 +147,7 @@ two-step checks, not throughput benchmarks.
 | Ref2VA video | `0.4.1` | 81,180 | 7,708 MiB | 31.88 GiB | 354.346 s | 124 frames, 24 fps, AAC |
 
 Every run recorded two forwards, 100 blocks, and 500 weight-scheduler lifecycle
-events with at most two staged blocks. The shared settings were
+events with at most two staged blocks. The DiT settings were
 `q_chunk_tokens=5760` and 4,096 tokens for the K/V, QKV projection, and MLP
 tiles. These August 25, 2026 artifacts predate the new Qwen SeqAttn path and do
 not validate its tuning or memory behavior. The per-scenario JSON remains the
