@@ -6,7 +6,7 @@ services:
       dockerfile: docker/Dockerfile
       target: runtime
       args:
-        COMFYUI_BASE_IMAGE: ${COMFYUI_BASE_IMAGE}
+        PYTORCH_BASE_IMAGE: ${PYTORCH_BASE_IMAGE:-nvcr.io/nvidia/pytorch@sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e}
     user: "${HOST_UID}:${HOST_GID}"
     ports:
       - "${HOST_PORT}:${COMFYUI_PORT}"

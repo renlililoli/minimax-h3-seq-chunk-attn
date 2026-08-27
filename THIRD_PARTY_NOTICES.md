@@ -12,6 +12,34 @@ model execution interfaces provided by ComfyUI.
 
 The complete GPL-3.0 license text is provided in `LICENSE`.
 
+## ComfyUI-Manager
+
+The Docker image includes ComfyUI-Manager at a fixed commit. ComfyUI-Manager is
+not included in this custom node's source distribution or wheel.
+
+- Upstream: https://github.com/ltdrdata/ComfyUI-Manager
+- Commit: `d47c9346190397e1c316bc5a82155faaf9f5d700`
+- License: GNU General Public License v3.0
+
+The Manager checkout in the built image contains its upstream `LICENSE.txt`.
+
+## NVIDIA PyTorch Container
+
+The optional RTX 50-series Docker image starts from the publicly pullable
+NVIDIA PyTorch `26.01-py3` container. This base is not included in the custom
+node's source distribution or wheel.
+
+- Catalog: https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch
+- Image: `nvcr.io/nvidia/pytorch`
+- Digest: `sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e`
+- NVIDIA Software License Agreement:
+  https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/
+- NVIDIA AI Product-Specific Terms:
+  https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/
+
+Review the NVIDIA terms before building, using, or redistributing the Docker
+image. Pulling the base image anonymously does not remove those terms.
+
 ## stream-attn / seqattn_core
 
 This custom node depends on the separately packaged `seqattn-core` runtime from

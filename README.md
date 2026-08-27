@@ -205,10 +205,12 @@ changed internal MiniMax-H3 sampling contract as a supported environment.
 
 For an RTX 50-series container, use the pinned
 [`docker/Dockerfile`](docker/Dockerfile) and
-[`docker/README.md`](docker/README.md). The image starts from the exact
-ComfyUI/PyTorch/CUDA base used by the validated runs, verifies the pinned
-ComfyUI commit and DynamicVRAM runtime during the build, and installs this node
-with its fixed `seqattn-core` revision.
+[`docker/README.md`](docker/README.md). The image starts from a publicly
+pullable, digest-pinned NVIDIA NGC PyTorch base, installs the validated stable
+CUDA 12.8 Torch wheels, checks out the pinned ComfyUI commit, verifies the
+DynamicVRAM runtime during the build, and installs this node with its fixed
+`seqattn-core` revision. Docker base-image and bundled Manager terms are listed
+in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ### AIMDO Startup Order
 

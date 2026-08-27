@@ -22,6 +22,9 @@
 - Build the Compose service from the production `runtime` stage and document
   `up --build`, preventing stale or checks-stage images from starting as
   ComfyUI.
+- Replace the local-only `comfyui@sha256:...` Docker base with the publicly
+  pullable, digest-pinned NVIDIA NGC PyTorch 26.01 image and rebuild the fixed
+  Torch CUDA 12.8, ComfyUI, and ComfyUI-Manager stack in the Dockerfile.
 - Run the Compose container as the configured host UID/GID so writable input,
   output, user, and cache mounts work on NFS homes with root squashing.
 - Keep `0.4.0` and `0.4.1` measurements explicitly historical instead of

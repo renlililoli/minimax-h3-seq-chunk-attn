@@ -1,17 +1,22 @@
 # RTX 50-Series ComfyUI Image
 
-This image extends the exact ComfyUI environment used for the `0.4.x`
-validated runs:
+This image reconstructs the pinned ComfyUI compatibility stack used for the
+`0.4.x` validated runs from a publicly pullable NVIDIA NGC base:
 
+- NVIDIA PyTorch `26.01-py3`, pinned by immutable multi-architecture digest
 - ComfyUI `0.30.0`, commit `9a9fdb10ed144ce760d9682cb247526ea23cc525`
 - PyTorch `2.10.0+cu128`
 - CUDA runtime reported by PyTorch: `12.8`
 - `comfy-aimdo` `0.4.11`
+- ComfyUI-Manager commit `d47c9346190397e1c316bc5a82155faaf9f5d700`
 - `seqattn-core` commit `86049c058a4dfb26da408e79ca2c95677ebbd250`
 
-The default base is pinned by digest rather than by a floating tag. The build
-also checks every version above before installing this node, so a mismatched
-base image fails immediately.
+The default base is
+`nvcr.io/nvidia/pytorch@sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e`,
+the public `26.01-py3` image pinned by digest rather than by a floating tag.
+The Dockerfile replaces its preview Torch build with the validated stable
+CUDA 12.8 wheels, checks out the exact ComfyUI and Manager commits, and checks
+the resulting versions before installing this node.
 
 ## Build
 
@@ -53,19 +58,23 @@ docker build \
   .
 ```
 
-The default `FROM` reference is the locally validated
-`comfyui@sha256:4708ab49a718640950f5cd698172d4800718d3b62e961f79d20866c115a8cff5`.
-To use a mirrored copy of the same base image, override the reference while
-retaining the build-time version checks:
+The default `FROM` reference can be pulled anonymously from NVIDIA NGC. To use
+a mirrored copy of the same NGC image, override the reference while retaining
+the build-time version checks:
 
 ```bash
 docker build \
   --file docker/Dockerfile \
   --target runtime \
-  --build-arg COMFYUI_BASE_IMAGE=registry.example/comfyui@sha256:... \
+  --build-arg PYTORCH_BASE_IMAGE=registry.example/nvidia-pytorch@sha256:... \
   --tag minimax-h3-seqattn:comfyui-0.30.0-cu128-rtx50 \
   .
 ```
+
+Public pull access does not replace the NVIDIA container license terms. Review
+the NVIDIA Software License Agreement and NVIDIA AI Product-Specific Terms
+listed in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) before
+redistributing the built image.
 
 Model weights are intentionally not copied into the image.
 
@@ -73,7 +82,7 @@ Model weights are intentionally not copied into the image.
 
 `docker/.env` contains the deployment-level settings:
 
-- image name and pinned base image reference;
+- image name and pinned public NVIDIA PyTorch base reference;
 - GPU selection, host UID/GID, host port, and bind-mount paths;
 - ComfyUI DynamicVRAM, NVML pressure, async offload, reserve, and headroom;
 - CUDA module loading, PyTorch allocator, libc allocator, cache, and NVTX
@@ -124,9 +133,9 @@ An RTX 5090 reports compute capability `(12, 0)`.
 
 ## Run Repository Checks
 
-Build the separate `checks` target. It extends the exact runtime image with a
-pinned Ruff binary; pytest and build already come from the fixed base image.
-The production image does not contain the additional lint tool.
+Build the separate `checks` target. It extends the exact runtime image with
+pinned Ruff, pytest, and build packages. The production image does not add the
+lint tool.
 
 ```bash
 docker build \

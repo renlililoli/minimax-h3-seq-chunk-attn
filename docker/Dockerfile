@@ -1,12 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-ARG COMFYUI_BASE_IMAGE=comfyui@sha256:4708ab49a718640950f5cd698172d4800718d3b62e961f79d20866c115a8cff5
-FROM ${COMFYUI_BASE_IMAGE} AS runtime
+ARG PYTORCH_BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e
+FROM ${PYTORCH_BASE_IMAGE} AS runtime
 
 ARG COMFYUI_VERSION=0.30.0
 ARG COMFYUI_COMMIT=9a9fdb10ed144ce760d9682cb247526ea23cc525
+ARG COMFYUI_REPOSITORY=https://github.com/Comfy-Org/ComfyUI.git
+ARG COMFYUI_MANAGER_COMMIT=d47c9346190397e1c316bc5a82155faaf9f5d700
+ARG COMFYUI_MANAGER_REPOSITORY=https://github.com/ltdrdata/ComfyUI-Manager.git
 ARG TORCH_VERSION=2.10.0+cu128
+ARG TORCHVISION_VERSION=0.25.0+cu128
+ARG TORCHAUDIO_VERSION=2.10.0+cu128
 ARG TORCH_CUDA_VERSION=12.8
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 ARG COMFY_AIMDO_VERSION=0.4.11
 ARG SEQATTN_CORE_COMMIT=86049c058a4dfb26da408e79ca2c95677ebbd250
 
@@ -15,19 +21,58 @@ LABEL org.opencontainers.image.description="Pinned ComfyUI 0.30.0 and CUDA 12.8 
 LABEL org.opencontainers.image.source="https://github.com/renlililoli/minimax-h3-seq-chunk-attn"
 LABEL io.seqattn.comfyui.version="${COMFYUI_VERSION}"
 LABEL io.seqattn.comfyui.commit="${COMFYUI_COMMIT}"
+LABEL io.seqattn.comfyui-manager.commit="${COMFYUI_MANAGER_COMMIT}"
 LABEL io.seqattn.seqattn-core.commit="${SEQATTN_CORE_COMMIT}"
 
 USER root
-WORKDIR /opt/ComfyUI
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends libx11-6 libxext6 \
+    && apt-get install --yes --no-install-recommends git libx11-6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip uninstall --yes torch torchvision torchaudio \
+    && python -m pip install \
+        --disable-pip-version-check \
+        --no-cache-dir \
+        --index-url "${PYTORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" \
+        "torchaudio==${TORCHAUDIO_VERSION}"
+
+RUN git init /opt/ComfyUI \
+    && git -C /opt/ComfyUI remote add origin "${COMFYUI_REPOSITORY}" \
+    && git -C /opt/ComfyUI fetch --depth 1 origin "${COMFYUI_COMMIT}" \
+    && git -C /opt/ComfyUI checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/ComfyUI rev-parse HEAD)" = "${COMFYUI_COMMIT}"
+
+WORKDIR /opt/ComfyUI
+
+RUN grep -viE '^(torch|torchvision|torchaudio)([<>= ]|$)' \
+        requirements.txt > /tmp/comfyui-requirements.txt \
+    && python -m pip install \
+        --disable-pip-version-check \
+        --no-cache-dir \
+        --requirement /tmp/comfyui-requirements.txt \
+    && rm /tmp/comfyui-requirements.txt
+
+RUN git init custom_nodes/ComfyUI-Manager \
+    && git -C custom_nodes/ComfyUI-Manager remote add origin \
+        "${COMFYUI_MANAGER_REPOSITORY}" \
+    && git -C custom_nodes/ComfyUI-Manager fetch --depth 1 origin \
+        "${COMFYUI_MANAGER_COMMIT}" \
+    && git -C custom_nodes/ComfyUI-Manager checkout --detach FETCH_HEAD \
+    && test "$(git -C custom_nodes/ComfyUI-Manager rev-parse HEAD)" = \
+        "${COMFYUI_MANAGER_COMMIT}" \
+    && python -m pip install \
+        --disable-pip-version-check \
+        --no-cache-dir \
+        --requirement custom_nodes/ComfyUI-Manager/requirements.txt
 
 RUN git config --system --add safe.directory /opt/ComfyUI
 
 RUN COMFYUI_VERSION="${COMFYUI_VERSION}" \
     COMFYUI_COMMIT="${COMFYUI_COMMIT}" \
+    COMFYUI_MANAGER_COMMIT="${COMFYUI_MANAGER_COMMIT}" \
     TORCH_VERSION="${TORCH_VERSION}" \
     TORCH_CUDA_VERSION="${TORCH_CUDA_VERSION}" \
     COMFY_AIMDO_VERSION="${COMFY_AIMDO_VERSION}" \
@@ -54,6 +99,22 @@ require(commit, os.environ["COMFYUI_COMMIT"], "ComfyUI commit")
 require(torch.__version__, os.environ["TORCH_VERSION"], "PyTorch version")
 require(torch.version.cuda or "", os.environ["TORCH_CUDA_VERSION"], "PyTorch CUDA")
 require(version("comfy-aimdo"), os.environ["COMFY_AIMDO_VERSION"], "comfy-aimdo version")
+
+manager_commit = subprocess.check_output(
+    [
+        "git",
+        "-C",
+        "/opt/ComfyUI/custom_nodes/ComfyUI-Manager",
+        "rev-parse",
+        "HEAD",
+    ],
+    text=True,
+).strip()
+require(
+    manager_commit,
+    os.environ["COMFYUI_MANAGER_COMMIT"],
+    "ComfyUI-Manager commit",
+)
 PY
 
 RUN install -d /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn
@@ -109,12 +170,16 @@ CMD ["/opt/seqattn/bin/start-comfyui"]
 
 FROM runtime AS checks
 
+ARG BUILD_VERSION=1.4.0
+ARG PYTEST_VERSION=8.1.1
 ARG RUFF_VERSION=0.16.4
 
 RUN python -m pip install \
         --disable-pip-version-check \
         --no-cache-dir \
         --no-deps \
+        "build==${BUILD_VERSION}" \
+        "pytest==${PYTEST_VERSION}" \
         "ruff==${RUFF_VERSION}"
 
 COPY docker/check.sh /opt/seqattn/bin/check-repo

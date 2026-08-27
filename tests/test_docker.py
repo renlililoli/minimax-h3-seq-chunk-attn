@@ -18,6 +18,12 @@ def test_compose_builds_the_runtime_stage():
 def test_environment_template_declares_host_user_mapping():
     environment = (REPOSITORY_ROOT / "docker" / ".env.example").read_text()
 
+    assert (
+        "PYTORCH_BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:"
+        "38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e"
+        in environment
+    )
+    assert "COMFYUI_BASE_IMAGE=" not in environment
     assert "HOST_UID=1000" in environment
     assert "HOST_GID=1000" in environment
     assert "COMFYUI_TEMP_DIRECTORY=/opt/ComfyUI/user" in environment
@@ -33,6 +39,36 @@ def test_runtime_allows_the_host_user_to_read_the_pinned_comfyui_revision():
     dockerfile = (REPOSITORY_ROOT / "docker" / "Dockerfile").read_text()
 
     assert "git config --system --add safe.directory /opt/ComfyUI" in dockerfile
+
+
+def test_runtime_rebuilds_comfyui_from_the_public_pytorch_base():
+    dockerfile = (REPOSITORY_ROOT / "docker" / "Dockerfile").read_text()
+
+    assert (
+        "ARG PYTORCH_BASE_IMAGE=nvcr.io/nvidia/pytorch@sha256:"
+        "38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e"
+        in dockerfile
+    )
+    assert "FROM ${PYTORCH_BASE_IMAGE} AS runtime" in dockerfile
+    assert "comfyui@sha256:4708ab49" not in dockerfile
+    assert '"torch==${TORCH_VERSION}"' in dockerfile
+    assert 'git -C /opt/ComfyUI fetch --depth 1 origin "${COMFYUI_COMMIT}"' in dockerfile
+    assert "git -C custom_nodes/ComfyUI-Manager fetch --depth 1 origin" in dockerfile
+    assert '"${COMFYUI_MANAGER_COMMIT}"' in dockerfile
+
+    compose = (REPOSITORY_ROOT / "docker" / "compose.yaml").read_text()
+    assert "PYTORCH_BASE_IMAGE:" in compose
+    assert "COMFYUI_BASE_IMAGE:" not in compose
+
+
+def test_third_party_notices_cover_docker_inputs():
+    notices = (REPOSITORY_ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+
+    assert "nvcr.io/nvidia/pytorch" in notices
+    assert "38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e" in notices
+    assert "d47c9346190397e1c316bc5a82155faaf9f5d700" in notices
+    assert "NVIDIA Software License Agreement" in notices
+    assert "GNU General Public License v3.0" in notices
 
 
 def test_documented_production_builds_select_the_runtime_stage():
