@@ -5,7 +5,7 @@ Exact CPU-backed streaming attention for native ComfyUI MiniMax-H3 models.
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-0.30.0%20pinned-111827)](#requirements)
 [![Platform](https://img.shields.io/badge/Linux-NVIDIA%20CUDA-76b900)](#requirements)
 [![Weights](https://img.shields.io/badge/INT8%20DiT-NVFP4%20Text-7c3aed)](#models)
-[![Capacity](https://img.shields.io/badge/81K%20tokens-8%20GiB%20validated-16a34a)](#validated-run)
+[![Historical validation](https://img.shields.io/badge/0.4.0-81K%20tokens%20at%208%20GiB-16a34a)](#historical-040-validation)
 
 This package bounds both major MiniMax-H3 activation paths. The DiT and Qwen
 SeqAttn patches keep long-sequence hidden state and complete Q/K/V tensors in
@@ -18,22 +18,26 @@ MiniMax-H3 text projection and token refinement run once per sampling job; the
 refined conditioning is then reused from pinned CPU memory for the remaining
 denoise steps.
 
-Supported layouts: T2VA, FL2VA, and Ref2VA. The published `0.4.0` validation is
-a complete 20-step, 81,180-token Ref2VA run at 1344x768 with 124 output frames.
-That historical result validates the fused DiT path and the previous Qwen
-offload implementation; it is not a Qwen SeqAttn performance claim.
+Supported layouts: T2VA, FL2VA, and Ref2VA. Release evidence is kept strictly
+versioned below. The published `0.4.0` validation is a complete 20-step,
+81,180-token Ref2VA run at 1344x768 with 124 output frames. That historical
+result validates the fused DiT path and the previous Qwen offload
+implementation; it is not evidence for the current Qwen SeqAttn path.
 
 The supported ComfyUI baseline is fixed to **version `0.30.0`, commit
 `9a9fdb10ed144ce760d9682cb247526ea23cc525`**. Newer ComfyUI releases are not
 part of the `0.4.x` compatibility contract, even if individual code paths may
 continue to work.
 
-## Validated Run
+## Historical 0.4.0 Validation
 
-The `0.4.0` fused DiT path completed a real **20-step MiniMax-H3 Ref2VA edit**
-at 1344x768 with 124 reference frames and 124 output frames. It used DynamicVRAM
-for model weights, a strict current-block plus next-block SeqAttn prefetch
-pipeline, and an 8,192 MiB whole-process target.
+The following measurements belong only to package version `0.4.0`. Its fused
+DiT path completed a real **20-step MiniMax-H3 Ref2VA edit** at 1344x768 with
+124 reference frames and 124 output frames. It used DynamicVRAM for model
+weights, a strict current-block plus next-block SeqAttn prefetch pipeline, and
+an 8,192 MiB whole-process target. The run used the retired Qwen `prefetch`
+offload path, so none of its Qwen timing, memory, or capacity values apply to
+the current Qwen SeqAttn implementation.
 
 ### Generated Output
 
@@ -183,6 +187,13 @@ No Git submodules are required. Installation resolves the pinned
 - Batch size 1
 - Sufficient CPU DRAM for full hidden and Q/K/V storage
 
+For the current release, 8 GiB of VRAM provides ample headroom for typical
+bundled workflows, while 12 GiB is recommended for the best overall
+experience. System RAM of 64 GiB is usually sufficient. Very long or
+high-resolution Ref2VA inputs can require more host memory; the bundled
+243-frame long Ref2VA workflow is intentionally a stress case and may exceed a
+single 64 GiB NUMA node during video decode.
+
 The attention and Qwen activation paths use BF16 regardless of checkpoint
 storage precision. The Qwen node requires `CLIPLoader` device `default`. LoRA,
 diffusion-model replacement patches, NVMe activation backing, and multi-GPU
@@ -195,7 +206,7 @@ changed internal MiniMax-H3 sampling contract as a supported environment.
 For an RTX 50-series container, use the pinned
 [`docker/Dockerfile`](docker/Dockerfile) and
 [`docker/README.md`](docker/README.md). The image starts from the exact
-ComfyUI/PyTorch/CUDA base used by the checked-in examples, verifies the pinned
+ComfyUI/PyTorch/CUDA base used by the validated runs, verifies the pinned
 ComfyUI commit and DynamicVRAM runtime during the build, and installs this node
 with its fixed `seqattn-core` revision.
 
@@ -212,8 +223,7 @@ This guarantee does not apply to custom Python launchers that bypass
 importing `torch`, `nodes`, `comfy.model_patcher`, or any module that imports
 `comfy_aimdo.host_buffer`. Otherwise `host_buffer` can cache an uninitialized
 native-library handle and fail when `ModelPatcherDynamic` creates its first
-host buffer. The bundled command-line examples perform this early
-initialization automatically.
+host buffer.
 
 ## Models
 
@@ -235,12 +245,6 @@ ComfyUI/models/
 Model weights are not included with this node.
 
 ## Usage
-
-For command-line, two-step end-to-end checks after a fresh installation, see
-the bundled [`examples/`](examples/README.md) directory. It includes one-click
-T2VA, FL2VA, image-reference Ref2VA, and video-reference Ref2VA scripts plus
-recorded outputs, memory traces, and validation metadata. Its summary separates
-the current clean-install `0.4.1` results for all four supported scenarios.
 
 Import the workflow matching the generation mode:
 
@@ -270,27 +274,32 @@ or audio VAE encode. It does not select a backend itself; the supplied `CLIP`
 and video `VAE` objects determine which implementations run.
 
 The workflow files for all modes use the fused DiT integration introduced in
-`0.4.0`. The current release-level performance and memory claim remains the
-20-step Ref2VA run documented above; the `0.4.1` two-step example results are
-clean-install functional checks and are not presented as throughput results.
+`0.4.0`. No current-release Qwen SeqAttn performance, whole-process memory, or
+maximum-capacity claim is derived from the historical `0.4.0` run or the
+historical `0.4.1` two-step clean-install checks.
 
 The long Ref2VA workflow is a UI-driven memory and integration stress test,
 not a recommended quality preset. It generates 243 frames at 1344x768 from the
-bundled 243-frame reference and intentionally uses only two denoise steps.
+bundled 243-frame reference and intentionally uses only two denoise steps. The
+workflow file by itself is not release evidence; only a preserved result with
+matching package and environment metadata should be cited as validation.
 Before importing it, copy
 `assets/benchmark/ref2va_reference_1344x768_243f.mp4` into the ComfyUI
-`input/` directory. See [`examples/README.md`](examples/README.md) for the exact
-commands and NUMA memory guidance for this host-memory-heavy case.
+`input/` directory. This case can exceed one 64 GiB NUMA node during video
+decode even though GPU memory stays low; on a multi-node host, allow enough
+memory nodes for the complete Qwen, DiT, and VAE pipeline instead of binding
+the container to a single 64 GiB memory node.
 
 Calibrate `q_chunk_tokens` for each deployed stage, GPU, backend, CPU affinity, and
 NUMA memory policy using the independent
 [SeqAttn chunk-size calibration guide](https://github.com/renlililoli/stream-attn/blob/main/docs/q_chunk_calibration.md).
-The shipped `5760` value matches the validated RTX 5090 single-node path at
+The shipped DiT `5760` value matches the validated RTX 5090 single-node path at
 about 37 GB/s concurrent pinned H2D bandwidth. The same GPU used `3840` after
 interleaving pinned pages across two populated memory nodes reproduced about
-56.7 GB/s. Do not select Q from nominal PCIe bandwidth or advertised GPU peak
-TFLOPS; the guide measures the effective concurrent bandwidth and resident
-attention throughput used by the roofline.
+56.7 GB/s. These are DiT calibration results, not Qwen SeqAttn measurements.
+Do not select Q from nominal PCIe bandwidth or advertised GPU peak TFLOPS; the
+guide measures the effective concurrent bandwidth and resident attention
+throughput used by the roofline.
 
 The DiT and Qwen patch nodes each expose their own Q/KV chunks as workflow
 inputs. This makes backend selection and the main performance parameter

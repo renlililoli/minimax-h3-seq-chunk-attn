@@ -15,7 +15,7 @@ of `renlililoli/minimax-h3-seq-chunk-attn`. This worktree owns:
 - Qwen BF16 conditioning/preflight and refined-conditioning caching;
 - streamed MiniMax-H3 video VAE encode/decode;
 - T2VA, first/last-frame, FL2VA, and Ref2VA workflows;
-- clean-install examples, checked-in evidence, and the RTX 50-series image;
+- the RTX 50-series image;
 - GitHub Release and Comfy Registry publication.
 
 The independent core lives at `renlililoli/stream-attn`. Changes to kernels,
@@ -23,7 +23,7 @@ planners, generic projected attention, paged storage, or `H3DiTRunner` belong
 there first. Consume a reviewed immutable core commit through
 `seqattn-core[dit]`.
 
-As of August 26, 2026, this branch is version `0.4.1`, pins ComfyUI `0.30.0` at
+As of August 27, 2026, this branch is version `0.4.2`, pins ComfyUI `0.30.0` at
 commit `9a9fdb10ed144ce760d9682cb247526ea23cc525`, and pins SeqAttn commit
 `86049c058a4dfb26da408e79ca2c95677ebbd250`. Verify current metadata before a
 release rather than assuming these values remain current.
@@ -117,21 +117,22 @@ GPU peak numbers.
 ### AIMDO import order
 
 Normal Web UI startup must go through the pinned ComfyUI `main.py`, which
-initializes `comfy_aimdo.control` before Torch. Custom Python launchers and
-examples must initialize AIMDO before importing `torch`, `nodes`,
-`comfy.model_patcher`, or `comfy_aimdo.host_buffer` consumers.
+initializes `comfy_aimdo.control` before Torch. Custom Python launchers must
+initialize AIMDO before importing `torch`, `nodes`, `comfy.model_patcher`, or
+`comfy_aimdo.host_buffer` consumers.
 
 ### Compatibility
 
 The entrypoint deliberately rejects ComfyUI versions/commits outside the pinned
 compatibility contract. Do not widen the range based only on import success.
 To support a new ComfyUI release, inspect its MiniMax-H3 sampling, DynamicVRAM,
-model patcher, VAE, and node contracts, then run clean-install examples.
+model patcher, VAE, and node contracts, then run the bundled workflows
+end-to-end from a fresh installation.
 
 ## Development Workflow
 
-1. Identify whether the change is core, adapter, workflow, example, Docker, or
-   release metadata. Move core work to the SeqAttn repository.
+1. Identify whether the change is core, adapter, workflow, Docker, or release
+   metadata. Move core work to the SeqAttn repository.
 2. Add focused tests beside the affected module.
 3. Keep workflows and test assertions synchronized when node inputs/defaults
    change.
@@ -139,7 +140,8 @@ model patcher, VAE, and node contracts, then run clean-install examples.
    denoising.
 5. For user-facing behavior, test a fresh installation rather than relying on
    dependencies already present in a development image.
-6. Update raw example artifacts before summary tables and README claims.
+6. Preserve UI workflow runs with matching package and environment metadata
+   before citing them in summary tables or README claims.
 7. Preserve failures and explain invalid runs rather than replacing them with
    undocumented reruns.
 
@@ -170,28 +172,25 @@ docker run --rm --gpus device=0 --ipc=host \
 The checks target runs Ruff, pytest, whitespace validation, and builds the
 source/wheel from a clean staged tree. Do not publish if CI or this check fails.
 
-## End-to-End Examples
+## End-to-End Validation
 
-The supported clean-install scenarios are:
+The supported validation scenarios are:
 
 - T2VA;
 - FL2VA;
 - Ref2VA with images;
 - Ref2VA with video.
 
-Run them sequentially in fresh containers through
-`examples/run_all_2step_docker.sh`. Required model paths, expected ComfyUI
-commit, output files, and environment variables are documented in
-`examples/README.md`.
+Validate each by opening the bundled workflow in the pinned ComfyUI Web UI and
+running it end-to-end from a fresh installation. The workflow files live in
+`workflows/`; the long Ref2VA case additionally documents its host-memory and
+NUMA requirements in `README.md`.
 
-Each result directory should contain validated media, `result.json`, compressed
-memory trace, and compressed weight schedule when the fused DiT path ran.
-`result.json` is the source of truth. The summary and README must not contain a
-mixture of results from different package versions or environments.
-
-Two-step examples are functional release checks, not throughput claims. A
-release-level performance claim requires a documented longer run with exact
-hardware, process memory, steady-state timing, and artifact provenance.
+Preserve a validated run as a result record with matching package and
+environment metadata before citing it. A release-level performance claim
+requires a documented longer run with exact hardware, process memory,
+steady-state timing, and artifact provenance; a two-step UI run is a functional
+check, not a throughput claim.
 
 ## Docker and Deployment Configuration
 
@@ -213,7 +212,7 @@ For every node version change, keep these synchronized:
 - `comfyui_seqattn/__init__.py` `__version__`;
 - `CHANGELOG.md`;
 - tests that assert node/core versions;
-- README/example version labels when new artifacts were generated.
+- README version labels when new artifacts were generated.
 
 For every SeqAttn pin change, update the same immutable commit everywhere:
 
@@ -231,8 +230,8 @@ identify the core commit first, then use the full SHA.
 1. Confirm the intended SeqAttn commit is pushed and installable with `[dit]`.
 2. Synchronize versions, dependency pins, changelog, compatibility pins, tests,
    and current documentation.
-3. Run focused tests, Docker checks, and the clean-install examples required by
-   the change.
+3. Run focused tests, Docker checks, and the UI workflow end-to-end checks
+   required by the change.
 4. Commit and push `community/comfyui-minimax-h3-seqattn`.
 5. Wait for the GitHub CI run for that exact commit to succeed.
 6. Create an annotated tag at the tested commit and push it:
@@ -286,7 +285,7 @@ and publish a new release.
 
 ## Completion Report
 
-When finishing work, identify the branch and commit, list checks/examples that
-actually ran, name any skipped validation, and distinguish source changes from
-new generated evidence. For a release, include the tag, target commit, GitHub
+When finishing work, identify the branch and commit, list checks that actually
+ran, name any skipped validation, and distinguish source changes from new
+generated evidence. For a release, include the tag, target commit, GitHub
 Release result, Registry workflow run, and Registry metadata verification.

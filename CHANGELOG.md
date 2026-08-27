@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 - 2026-08-27
 
 - Add a separate MiniMax-H3 Qwen SeqAttn node with CPU-backed vision and
   decoder hidden/Q/K/V, packed non-causal vision attention, causal decoder GQA,
@@ -12,8 +12,7 @@
 - Gather and dequantize only unique decoder token-embedding rows on the CPU, and
   reject non-finite or all-zero conditioning before ComfyUI can cache it.
 - Remove the old activation-estimate-based Qwen BF16 offload node and switch
-  bundled workflows and clean-install examples to the single streaming encode
-  path.
+  bundled workflows to the single streaming encode path.
 - Make Qwen, DiT, and video VAE streaming independent patch nodes. Connecting
   a node selects streaming for that stage; bypassing it keeps the native
   ComfyUI implementation.
@@ -25,6 +24,13 @@
   ComfyUI.
 - Run the Compose container as the configured host UID/GID so writable input,
   output, user, and cache mounts work on NFS homes with root squashing.
+- Keep `0.4.0` and `0.4.1` measurements explicitly historical instead of
+  applying them to the new Qwen SeqAttn implementation, and document current
+  8 GiB, recommended 12 GiB, and typical 64 GiB system-memory guidance.
+- Exclude local agent sessions, archived worktrees, and generated output state
+  from clean release staging.
+- Remove the bundled command-line examples and their checked-in results; UI
+  workflows are the supported end-to-end validation path.
 
 ## 0.4.1 - 2026-08-25
 

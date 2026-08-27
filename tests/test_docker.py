@@ -40,3 +40,17 @@ def test_documented_production_builds_select_the_runtime_stage():
 
     assert readme.count("  --target runtime \\") == 2
     assert "docker compose --env-file docker/.env --file docker/compose.yaml up --build" in readme
+
+
+def test_release_build_ignores_local_agent_and_archive_state():
+    ignored = set((REPOSITORY_ROOT / ".gitignore").read_text().splitlines())
+
+    assert {
+        "/.agents/",
+        "/.claude/",
+        "/.codex/",
+        "/.ruff_cache/",
+        "/.worktree-archive/",
+        "/outputs/",
+        "/sessions/",
+    } <= ignored

@@ -5,6 +5,15 @@ build/
 dist/
 /docker/.env
 
+# Local agent, archive, and generated-output state must not enter release builds.
+/.agents/
+/.claude/
+/.codex/
+/.ruff_cache/
+/.worktree-archive/
+/outputs/
+/sessions/
+
 # Local leftovers from the development worktree are not part of this branch.
 /comfyui_custom_nodes/
 /extern/

@@ -1,7 +1,7 @@
 # RTX 50-Series ComfyUI Image
 
-This image extends the exact ComfyUI environment used for the checked-in
-`0.4.1` examples:
+This image extends the exact ComfyUI environment used for the `0.4.x`
+validated runs:
 
 - ComfyUI `0.30.0`, commit `9a9fdb10ed144ce760d9682cb247526ea23cc525`
 - PyTorch `2.10.0+cu128`

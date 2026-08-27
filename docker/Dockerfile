@@ -62,7 +62,6 @@ COPY __init__.py pyproject.toml README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTIC
 COPY comfyui_seqattn/ \
     /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/comfyui_seqattn/
 COPY workflows/ /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/workflows/
-COPY examples/ /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/examples/
 COPY docker/seqattn.toml /etc/seqattn/config.toml
 COPY docker/entrypoint.sh /opt/seqattn/bin/start-comfyui
 RUN chmod 0755 /opt/seqattn/bin/start-comfyui
