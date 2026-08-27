@@ -37,6 +37,7 @@ The equivalent direct build is:
 ```bash
 docker build \
   --file docker/Dockerfile \
+  --target runtime \
   --tag minimax-h3-seqattn:comfyui-0.30.0-cu128-rtx50 \
   .
 ```
@@ -49,6 +50,7 @@ retaining the build-time version checks:
 ```bash
 docker build \
   --file docker/Dockerfile \
+  --target runtime \
   --build-arg COMFYUI_BASE_IMAGE=registry.example/comfyui@sha256:... \
   --tag minimax-h3-seqattn:comfyui-0.30.0-cu128-rtx50 \
   .
@@ -142,8 +144,11 @@ artifacts only to a temporary directory inside the disposable container.
 With Compose:
 
 ```bash
-docker compose --env-file docker/.env --file docker/compose.yaml up
+docker compose --env-file docker/.env --file docker/compose.yaml up --build
 ```
+
+The `--build` flag makes a source checkout pick up local node changes instead
+of silently reusing an older image with the same tag.
 
 Or directly:
 

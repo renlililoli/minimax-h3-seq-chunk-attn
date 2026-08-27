@@ -16,6 +16,9 @@
 - Keep Q/KV chunks explicit and independent on the Qwen and DiT nodes; load
   projection/MLP tiles and VAE tile/workspace settings from the shared SeqAttn
   TOML configuration.
+- Build the Compose service from the production `runtime` stage and document
+  `up --build`, preventing stale or checks-stage images from starting as
+  ComfyUI.
 
 ## 0.4.1 - 2026-08-25
 

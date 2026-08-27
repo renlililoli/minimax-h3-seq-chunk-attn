@@ -4,6 +4,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      target: runtime
       args:
         COMFYUI_BASE_IMAGE: ${COMFYUI_BASE_IMAGE}
     ports:
