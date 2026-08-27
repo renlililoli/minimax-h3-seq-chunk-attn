@@ -30,8 +30,9 @@
 - Keep `0.4.0` and `0.4.1` measurements explicitly historical instead of
   applying them to the new Qwen SeqAttn implementation, and document current
   8 GiB, recommended 12 GiB, and typical 64 GiB system-memory guidance.
-- Remove the retired Qwen offload memory chart from the root README while
-  retaining its raw `0.4.0` evidence in the historical experiment record.
+- Remove the retired benchmark media and the `0.4.0` Qwen-offload benchmark
+  section, memory and weight traces, and plotting artifacts now that the
+  current Qwen path uses SeqAttn.
 - Exclude local agent sessions, archived worktrees, and generated output state
   from clean release staging.
 - Remove the bundled command-line examples and their checked-in results; UI

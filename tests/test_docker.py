@@ -71,6 +71,14 @@ def test_third_party_notices_cover_docker_inputs():
     assert "GNU General Public License v3.0" in notices
 
 
+def test_readme_does_not_publish_the_retired_qwen_benchmark():
+    readme = (REPOSITORY_ROOT / "README.md").read_text()
+
+    assert "Historical 0.4.0 Validation" not in readme
+    assert "historical-040-validation" not in readme
+    assert "community_v040_ref2va_video_20step_20260825" not in readme
+
+
 def test_documented_production_builds_select_the_runtime_stage():
     readme = (REPOSITORY_ROOT / "docker" / "README.md").read_text()
 

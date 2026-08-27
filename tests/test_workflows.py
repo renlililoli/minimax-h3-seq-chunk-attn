@@ -112,7 +112,7 @@ def test_long_ref2va_workflow_is_a_two_step_video_ui_example():
     assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == []
     assert nodes["BasicScheduler"]["widgets_values"][1] == 2
     assert nodes["PrimitiveFloat"]["widgets_values"][0] == 10.125
-    assert nodes["LoadVideo"]["widgets_values"] == ["ref2va_reference_1344x768_243f.mp4"]
+    assert nodes["LoadVideo"]["widgets_values"] == ["ref2va_input.mp4"]
 
     conditioning = nodes["MiniMaxH3ReferenceToVideoSeqAttn"]
     inputs = {item["name"]: item.get("link") for item in conditioning["inputs"]}
