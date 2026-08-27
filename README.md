@@ -245,6 +245,7 @@ Import the workflow matching the generation mode:
 | Last-frame video | [`minimax_h3_seqattn_last_frame.json`](workflows/minimax_h3_seqattn_last_frame.json) | Prompt + last frame |
 | FL2VA | [`minimax_h3_seqattn_fl2va.json`](workflows/minimax_h3_seqattn_fl2va.json) | Prompt + first and last frames |
 | Ref2VA | [`minimax_h3_seqattn_ref2va.json`](workflows/minimax_h3_seqattn_ref2va.json) | Prompt + image/video/audio references |
+| Ref2VA long 2-step validation | [`minimax_h3_seqattn_ref2va_long_2step.json`](workflows/minimax_h3_seqattn_ref2va_long_2step.json) | Bundled 243-frame reference video + audio |
 
 The four T2VA/FL2VA workflows use the same FL2VA checkpoint. The first frame
 anchors frame 0; the last frame anchors the final aligned output frame. To
@@ -266,6 +267,14 @@ The workflow files for all modes use the fused DiT integration introduced in
 `0.4.0`. The current release-level performance and memory claim remains the
 20-step Ref2VA run documented above; the `0.4.1` two-step example results are
 clean-install functional checks and are not presented as throughput results.
+
+The long Ref2VA workflow is a UI-driven memory and integration stress test,
+not a recommended quality preset. It generates 243 frames at 1344x768 from the
+bundled 243-frame reference and intentionally uses only two denoise steps.
+Before importing it, copy
+`assets/benchmark/ref2va_reference_1344x768_243f.mp4` into the ComfyUI
+`input/` directory. See [`examples/README.md`](examples/README.md) for the exact
+commands and NUMA memory guidance for this host-memory-heavy case.
 
 Calibrate `q_chunk_tokens` for each deployed stage, GPU, backend, CPU affinity, and
 NUMA memory policy using the independent

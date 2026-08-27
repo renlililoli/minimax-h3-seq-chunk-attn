@@ -8,6 +8,7 @@ WORKFLOW_DIR = REPOSITORY_ROOT / "workflows"
 FL2VA_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
 REF2VA_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 REF2VA_WORKFLOW = "minimax_h3_seqattn_ref2va.json"
+REF2VA_LONG_WORKFLOW = "minimax_h3_seqattn_ref2va_long_2step.json"
 
 WORKFLOW_KEYFRAME_LINKS = {
     "minimax_h3_seqattn_t2va.json": (None, None),
@@ -50,7 +51,7 @@ def test_fl2va_workflows_are_standalone_and_use_safe_defaults():
 
 
 def test_fl2va_workflow_links_match_node_slots():
-    for filename in (*WORKFLOW_KEYFRAME_LINKS, REF2VA_WORKFLOW):
+    for filename in (*WORKFLOW_KEYFRAME_LINKS, REF2VA_WORKFLOW, REF2VA_LONG_WORKFLOW):
         workflow = json.loads((WORKFLOW_DIR / filename).read_text())
         nodes = {node["id"]: node for node in workflow["nodes"]}
         links = {link[0]: link for link in workflow["links"]}
@@ -99,3 +100,28 @@ def test_ref2va_workflow_uses_streaming_vae_and_matching_references():
     assert "<Picture 1>" in prompt
     assert "<Picture 2>" in prompt
     assert "<Audio 1>" not in prompt
+
+
+def test_long_ref2va_workflow_is_a_two_step_video_ui_example():
+    workflow = json.loads((WORKFLOW_DIR / REF2VA_LONG_WORKFLOW).read_text())
+    nodes = _nodes_by_type(workflow)
+
+    assert nodes["UNETLoader"]["widgets_values"][0] == REF2VA_MODEL
+    assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [5760, 4096]
+    assert nodes["MiniMaxH3QwenSeqAttn"]["widgets_values"] == [5760, 4096]
+    assert nodes["MiniMaxH3VAEStreaming"]["widgets_values"] == []
+    assert nodes["BasicScheduler"]["widgets_values"][1] == 2
+    assert nodes["PrimitiveFloat"]["widgets_values"][0] == 10.125
+    assert nodes["LoadVideo"]["widgets_values"] == ["ref2va_reference_1344x768_243f.mp4"]
+
+    conditioning = nodes["MiniMaxH3ReferenceToVideoSeqAttn"]
+    inputs = {item["name"]: item.get("link") for item in conditioning["inputs"]}
+    assert inputs["ref_images.ref_image_0"] is None
+    assert inputs["ref_images.ref_image_1"] is None
+    assert inputs["ref_videos.ref_video_0"] == 289
+    assert inputs["ref_video_audios.ref_video_audio_0"] == 290
+    assert conditioning["widgets_values"][1:4] == [1344, 768, 243]
+
+    prompt = nodes["PrimitiveStringMultiline"]["widgets_values"][0]
+    assert "<Video 1>" in prompt
+    assert "<Audio 1>" in prompt

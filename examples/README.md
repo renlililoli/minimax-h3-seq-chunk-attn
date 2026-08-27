@@ -85,6 +85,32 @@ Audio decoding defaults to CPU so the complete pipeline, including media
 post-processing, stays within the 8 GiB GPU target. Pass `--audio-device cuda`
 when additional GPU memory is available.
 
+## Long Ref2VA UI Workflow
+
+[`minimax_h3_seqattn_ref2va_long_2step.json`](../workflows/minimax_h3_seqattn_ref2va_long_2step.json)
+is the browser-driven long-sequence validation workflow. It uses the bundled
+243-frame, 10.125-second reference video and generates 243 frames at 1344x768
+with two denoise steps. Two steps make this an integration and memory check;
+increase the step count for quality evaluation.
+
+Place the bundled input where ComfyUI's **Load Video** node can select it:
+
+```bash
+cp assets/benchmark/ref2va_reference_1344x768_243f.mp4 \
+  "$COMFYUI_DIR/input/ref2va_reference_1344x768_243f.mp4"
+```
+
+Start the pinned ComfyUI normally, import the workflow through the browser,
+verify the **Load Video** node resolves the copied file, and click **Run**. The
+workflow explicitly selects streaming Qwen, DiT, and video VAE stages, uses
+`q_chunk_tokens=5760` and `kv_chunk_tokens=4096`, and reads 4,096-token QKV/MLP
+tiles plus the VAE tile/workspace from the shared SeqAttn TOML configuration.
+
+This case can exceed one 64 GiB NUMA node during video decode even though GPU
+memory remains low. When using Docker cpusets on a multi-node host, allow
+enough host memory nodes for the complete Qwen, DiT, and VAE pipeline instead
+of binding the container to a single 64 GiB memory node.
+
 ## Clean-Install Docker Validation
 
 Maintainers can mount the package read-only into a clean ComfyUI image. The
