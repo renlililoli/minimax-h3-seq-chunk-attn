@@ -10,6 +10,7 @@ from comfy.ldm.minimax.model import MiniMaxH3Model
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
 
+from comfyui_seqattn import lora as lora_mod
 from comfyui_seqattn import nodes
 from comfyui_seqattn import vae as vae_mod
 
@@ -18,6 +19,8 @@ class FakePatcher:
     def __init__(self, diffusion_model):
         self.model = SimpleNamespace(diffusion_model=diffusion_model)
         self.model_options = {"transformer_options": {}}
+        self.patches = {}
+        self.weight_wrapper_patches = {}
         self.wrappers = {}
         self.callbacks = {}
 
@@ -26,6 +29,8 @@ class FakePatcher:
         clone.model_options = {
             "transformer_options": self.model_options["transformer_options"].copy()
         }
+        clone.patches = self.patches.copy()
+        clone.weight_wrapper_patches = self.weight_wrapper_patches.copy()
         clone.wrappers = {
             kind: {key: values.copy() for key, values in keyed.items()}
             for kind, keyed in self.wrappers.items()
@@ -102,6 +107,11 @@ def test_patch_node_schemas_select_backend_and_expose_q_kv_chunks():
         "q_chunk_tokens",
         "kv_chunk_tokens",
     ]
+    assert [item.id for item in nodes.MiniMaxH3SeqAttnLoRA.define_schema().inputs] == [
+        "model",
+        "lora_name",
+        "strength_model",
+    ]
     assert [item.id for item in nodes.MiniMaxH3QwenSeqAttn.define_schema().inputs] == [
         "clip",
         "q_chunk_tokens",
@@ -151,6 +161,82 @@ def test_clone_and_cleanup_callbacks_manage_runtime():
     ):
         callback(patched)
     assert runtime.cache_size == 0
+
+
+def test_lora_node_chains_before_and_after_seqattn(tmp_path, monkeypatch):
+    diffusion_model = object.__new__(MiniMaxH3Model)
+    source = FakePatcher(diffusion_model)
+    adapter_path = tmp_path / "adapter.safetensors"
+    adapter_path.write_bytes(b"adapter")
+    specs = (lora_mod.H3TargetSpec("blocks.0.attn.out_proj", ("block", 0), 3, 2),)
+
+    def bundle(identity, strength):
+        layer = lora_mod.LinearLoRA(
+            identity,
+            specs[0].path,
+            torch.ones(1, 3),
+            torch.ones(2, 1),
+            1.0,
+            1,
+            3,
+            2,
+            torch.float32,
+            strength,
+        )
+        return lora_mod.LinearLoRABundle(identity, strength, (layer,))
+
+    monkeypatch.setattr(nodes, "build_h3_target_specs", lambda _model: specs)
+    monkeypatch.setattr(nodes, "validate_h3_int8_convrot_base", lambda *_args: None)
+    monkeypatch.setattr(
+        nodes.folder_paths,
+        "get_full_path_or_raise",
+        lambda _kind, _name: str(adapter_path),
+    )
+    monkeypatch.setattr(
+        nodes.comfy.utils,
+        "load_torch_file",
+        lambda *_args, **_kwargs: ({"tensor": torch.ones(1)}, {}),
+    )
+    monkeypatch.setattr(
+        nodes,
+        "parse_h3_linear_lora",
+        lambda _state_dict, *, identity, strength, specs: bundle(identity, strength),
+    )
+
+    first = nodes.patch_minimax_h3_lora_model(
+        source,
+        lora_name="adapter.safetensors",
+        strength_model=0.75,
+    )
+    patched = nodes.patch_minimax_h3_model(
+        first,
+        q_chunk_tokens=5760,
+        kv_chunk_tokens=4096,
+    )
+    second = nodes.patch_minimax_h3_lora_model(
+        patched,
+        lora_name="adapter.safetensors",
+        strength_model=-0.25,
+    )
+
+    assert nodes.LORA_STATE_KEY not in source.model_options["transformer_options"]
+    state = second.model_options["transformer_options"][nodes.LORA_STATE_KEY]
+    runtime = second.model_options["transformer_options"][nodes.STATE_KEY]
+    assert [item.strength for item in state.bundles] == [0.75, -0.25]
+    assert runtime.lora_state is state
+    assert runtime.cache_size == 0
+
+
+def test_lora_node_rejects_existing_comfyui_weight_patches():
+    source = FakePatcher(object.__new__(MiniMaxH3Model))
+    source.patches["diffusion_model.blocks.0.attn.out_proj.weight"] = object()
+
+    with pytest.raises(ValueError, match="ordinary ComfyUI weight patches"):
+        nodes.patch_minimax_h3_lora_model(
+            source,
+            lora_name="adapter.safetensors",
+            strength_model=1.0,
+        )
 
 
 def test_video_vae_tile_size_validation_and_patch(tmp_path, monkeypatch):

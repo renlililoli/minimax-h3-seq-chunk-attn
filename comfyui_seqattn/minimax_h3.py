@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager, nullcontext
 
@@ -29,6 +30,14 @@ from seqattn_core import (
     H3SequenceMeta,
 )
 
+from .lora import (
+    EMBEDDING_STAGE,
+    FINAL_STAGE,
+    LoRAStageStreamer,
+    linear_input_act_with_lora,
+    linear_with_lora,
+    prepared_lora_stage,
+)
 from .runtime import SeqAttnRuntime
 from .weight_stream import run_weight_stages
 
@@ -113,11 +122,22 @@ def _rope_for_tile(block, position_ids: torch.Tensor, model, tile: torch.Tensor)
     return rope
 
 
-def _qkv_with_rope(block, tile: torch.Tensor, position_ids: torch.Tensor, model):
+def _qkv_with_rope(
+    block,
+    tile: torch.Tensor,
+    position_ids: torch.Tensor,
+    model,
+    adapters,
+    target: str,
+):
     tokens = tile.shape[0]
     heads = block.attn.heads
     head_dim = block.attn.head_dim
-    q, k, v = block.attn.qkv_proj(tile).split(heads * head_dim, dim=-1)
+    q, k, v = linear_with_lora(
+        block.attn.qkv_proj,
+        tile,
+        adapters.get(target, ()),
+    ).split(heads * head_dim, dim=-1)
     q = q.view(1, tokens, heads, head_dim)
     k = k.view(1, tokens, heads, head_dim)
     v = v.view(tokens, heads, head_dim)
@@ -266,6 +286,25 @@ def _project_int8_rows(
     )
 
 
+def _add_lora_rows_(
+    output: torch.Tensor,
+    tile: torch.Tensor,
+    adapters,
+    row_start: int,
+    row_stop: int,
+) -> torch.Tensor:
+    for adapter in adapters:
+        if adapter.scale == 0.0:
+            continue
+        hidden = torch.nn.functional.linear(tile, adapter.down)
+        update = torch.nn.functional.linear(
+            hidden,
+            adapter.up[row_start:row_stop],
+        )
+        output.add_(update, alpha=adapter.scale)
+    return output
+
+
 def _copy_projected_rows(
     destination: torch.Tensor,
     source: torch.Tensor,
@@ -274,11 +313,16 @@ def _copy_projected_rows(
     start: int,
     chunk_tokens: int,
     dtype: torch.dtype,
+    adapters=(),
 ) -> None:
     device = source.device
     for offset in range(0, source.shape[0], chunk_tokens):
         stop = min(offset + chunk_tokens, source.shape[0])
-        projected = projection(source[offset:stop]).to(dtype)
+        projected = linear_with_lora(
+            projection,
+            source[offset:stop],
+            adapters,
+        ).to(dtype)
         destination[start + offset : start + stop].copy_(projected, non_blocking=True)
         projected.record_stream(torch.cuda.current_stream(device))
 
@@ -318,6 +362,7 @@ def _refined_conditioning_cache_key(
     model: MiniMaxH3Model,
     text_states: torch.Tensor,
     transformer_options: dict,
+    lora_signature: tuple = (),
 ) -> tuple | None:
     if (
         transformer_options.get("patches")
@@ -350,7 +395,100 @@ def _refined_conditioning_cache_key(
         _tensor_version(text_states),
         model.hidden_size,
         _refiner_parameter_signature(model),
+        lora_signature,
     )
+
+
+def _time_embedder_with_lora(model, t: torch.Tensor, adapters):
+    embedder = model.time_embedder
+    if not (
+        adapters.get("time_embedder.proj_in")
+        or adapters.get("time_embedder.proj_out")
+    ):
+        return embedder(t)
+    half = embedder.freq_dim // 2
+    freqs = torch.exp(
+        -math.log(10000.0)
+        * torch.arange(half, dtype=torch.float32, device=t.device)
+        / half
+    )
+    args = t.to(torch.float32)[:, None] * freqs[None]
+    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    hidden = linear_with_lora(
+        embedder.proj_in,
+        emb,
+        adapters.get("time_embedder.proj_in", ()),
+    )
+    return linear_with_lora(
+        embedder.proj_out,
+        torch.nn.functional.silu(hidden),
+        adapters.get("time_embedder.proj_out", ()),
+    )
+
+
+def _adaln_with_lora(module, t_emb: torch.Tensor, adapters, target: str):
+    if not adapters.get(target):
+        return module(t_emb)
+    value = torch.nn.functional.silu(t_emb) if module.apply_silu else t_emb
+    value = linear_with_lora(module.linear, value, adapters.get(target, ()))
+    value = value.view(value.shape[0] * module.modalities, module.expand * module.hidden)
+    return value.chunk(module.expand, dim=-1)
+
+
+def _refiner_attention(block, x: torch.Tensor, transformer_options: dict, adapters, prefix: str):
+    attention = block.attn
+    tokens = x.shape[0]
+    qkv = linear_with_lora(
+        attention.qkv_proj,
+        x,
+        adapters.get(f"{prefix}.attn.qkv_proj", ()),
+    )
+    q, k, v = qkv.split(attention.heads * attention.head_dim, dim=-1)
+    q = attention.q_norm(q.view(tokens, attention.heads, attention.head_dim))
+    k = attention.k_norm(k.view(tokens, attention.heads, attention.head_dim))
+    v = v.view(tokens, attention.heads, attention.head_dim)
+    output = native_minimax.optimized_attention(
+        q.transpose(0, 1).unsqueeze(0),
+        k.transpose(0, 1).unsqueeze(0),
+        v.transpose(0, 1).unsqueeze(0),
+        attention.heads,
+        mask=None,
+        skip_reshape=True,
+        transformer_options=transformer_options,
+    )
+    return linear_with_lora(
+        attention.out_proj,
+        output.squeeze(0),
+        adapters.get(f"{prefix}.attn.out_proj", ()),
+    )
+
+
+def _refine_tokens(model, x: torch.Tensor, transformer_options: dict, adapters):
+    if not any(target.startswith("token_refiner.blocks.") for target in adapters):
+        return model.token_refiner(x, transformer_options=transformer_options)
+    for index, block in enumerate(model.token_refiner.blocks):
+        prefix = f"token_refiner.blocks.{index}"
+        attention = _refiner_attention(
+            block,
+            block.norm1(x),
+            transformer_options,
+            adapters,
+            prefix,
+        )
+        x = attention.add_(x)
+        hidden = linear_with_lora(
+            block.mlp.fc1,
+            block.norm2(x),
+            adapters.get(f"{prefix}.mlp.fc1", ()),
+        )
+        update = linear_input_act_with_lora(
+            block.mlp.fc2,
+            hidden,
+            "swiglu",
+            adapters.get(f"{prefix}.mlp.fc2", ()),
+        )
+        x = update.add_(x)
+    return model.token_refiner.final_norm(x)
 
 
 def _embed_packed_hidden(
@@ -364,6 +502,7 @@ def _embed_packed_hidden(
     transformer_options: dict,
     dtype: torch.dtype,
     chunk_tokens: int,
+    adapters,
 ) -> torch.Tensor:
     device = video_x.device
     hidden = _pinned_empty((layout.seq_len, model.hidden_size), dtype)
@@ -404,13 +543,22 @@ def _embed_packed_hidden(
     publish_refined_cache = False
     if text_states.shape[-1] != model.hidden_size:
         refined_cache_key = _refined_conditioning_cache_key(
-            model, text_states, transformer_options
+            model,
+            text_states,
+            transformer_options,
+            runtime.lora_state.signature,
         )
         if refined_cache_key is None:
             runtime.record_refined_conditioning_bypass()
-            refined = model.token_refiner(
-                model.condition_proj(text_states),
-                transformer_options=transformer_options,
+            refined = _refine_tokens(
+                model,
+                linear_with_lora(
+                    model.condition_proj,
+                    text_states,
+                    adapters.get("condition_proj", ()),
+                ),
+                transformer_options,
+                adapters,
             )
             text_states = _pinned_empty(refined.shape, torch.bfloat16)
             text_states.copy_(refined.to(torch.bfloat16), non_blocking=True)
@@ -420,9 +568,15 @@ def _embed_packed_hidden(
             if cached is not None:
                 text_states = cached
             else:
-                refined = model.token_refiner(
-                    model.condition_proj(text_states),
-                    transformer_options=transformer_options,
+                refined = _refine_tokens(
+                    model,
+                    linear_with_lora(
+                        model.condition_proj,
+                        text_states,
+                        adapters.get("condition_proj", ()),
+                    ),
+                    transformer_options,
+                    adapters,
                 )
                 text_states = _pinned_empty(refined.shape, torch.bfloat16)
                 text_states.copy_(refined.to(torch.bfloat16), non_blocking=True)
@@ -448,6 +602,7 @@ def _embed_packed_hidden(
                 start=start,
                 chunk_tokens=chunk_tokens,
                 dtype=dtype,
+                adapters=adapters.get("video_patch_proj", ()),
             )
             video_offset += count
         else:
@@ -459,6 +614,7 @@ def _embed_packed_hidden(
                 start=start,
                 chunk_tokens=chunk_tokens,
                 dtype=dtype,
+                adapters=adapters.get("audio_patch_proj", ()),
             )
             audio_offset += count
     torch.cuda.synchronize(device)
@@ -477,6 +633,7 @@ def _time_and_modality(
     transformer_options: dict,
     device: torch.device,
     dtype: torch.dtype,
+    adapters,
 ):
     shift_v = float(
         transformer_options.get("minimax_h3_sigma_shift_video", model.sigma_shift_video)
@@ -537,17 +694,20 @@ def _time_and_modality(
         i0 = pos.floor().long().clamp(max=table.shape[0] - 2)
         t_emb = torch.lerp(table[i0], table[i0 + 1], (pos - i0).unsqueeze(1))
     else:
-        t_emb = model.time_embedder(t_vals).to(dtype)
+        t_emb = _time_embedder_with_lora(model, t_vals, adapters).to(dtype)
     return sigma_v, shift_v, shift_a, seg_t, t_row, mod_segments, t_emb
 
 
 def _consumer_ops(
     model: MiniMaxH3Model,
     block,
+    block_index: int,
     mod_segments: list[tuple[int, int, int]],
     modulation: tuple[torch.Tensor, ...],
+    adapters,
 ) -> H3BlockOps:
     del model
+    prefix = f"blocks.{block_index}"
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation
     device = shift_msa.device
 
@@ -557,16 +717,35 @@ def _consumer_ops(
         start: int,
         stop: int,
     ):
-        update = block.attn.out_proj(attention)
+        update = linear_with_lora(
+            block.attn.out_proj,
+            attention,
+            adapters.get(f"{prefix}.attn.out_proj", ()),
+        )
         residual = residual_hidden_host[start:stop].to(device, non_blocking=True)
         return _gate_tile(residual, update, gate_msa, mod_segments, start, stop)
 
     def mlp(post_attention: torch.Tensor, start: int, stop: int):
         residual = post_attention
         tile = block.norm2(residual)
-        tile = _modulate_tile(tile, shift_mlp, scale_mlp, mod_segments, start, stop)
-        update = block.mlp(tile)
-        return _gate_tile(residual, update, gate_mlp, mod_segments, start, stop)
+        tile = _modulate_tile(
+            tile, shift_mlp, scale_mlp, mod_segments, start, stop
+        )
+        fc1_adapters = adapters.get(f"{prefix}.mlp.fc1", ())
+        fc2_adapters = adapters.get(f"{prefix}.mlp.fc2", ())
+        if not fc1_adapters and not fc2_adapters:
+            update = block.mlp(tile)
+        else:
+            hidden_mlp = linear_with_lora(block.mlp.fc1, tile, fc1_adapters)
+            update = linear_input_act_with_lora(
+                block.mlp.fc2,
+                hidden_mlp,
+                "swiglu",
+                fc2_adapters,
+            )
+        return _gate_tile(
+            residual, update, gate_mlp, mod_segments, start, stop
+        )
 
     return H3BlockOps(
         attention_epilogue=attention_epilogue,
@@ -582,40 +761,71 @@ def _consumer_ops(
 def _materialized_block_parts(
     model: MiniMaxH3Model,
     block,
+    block_index: int,
     layout: PackedLayout,
     mod_segments: list[tuple[int, int, int]],
     t_emb: torch.Tensor,
+    adapters,
 ) -> tuple[H3MaterializedProjection, H3BlockOps]:
-    modulation = block.adaln_proj(t_emb)
+    prefix = f"blocks.{block_index}"
+    modulation = _adaln_with_lora(
+        block.adaln_proj,
+        t_emb,
+        adapters,
+        f"{prefix}.adaln_proj.linear",
+    )
     shift_msa, scale_msa = modulation[:2]
     position_ids = layout.position_ids
 
     def project_qkv(tile: torch.Tensor, start: int, stop: int):
         tile = block.norm1(tile)
         tile = _modulate_tile(tile, shift_msa, scale_msa, mod_segments, start, stop)
-        return _qkv_with_rope(block, tile, position_ids[start:stop], model)
+        return _qkv_with_rope(
+            block,
+            tile,
+            position_ids[start:stop],
+            model,
+            adapters,
+            f"{prefix}.attn.qkv_proj",
+        )
 
     return (
         H3MaterializedProjection(
             project_qkv,
             weight_lease=lambda: _lease_group(block.attn.qkv_proj),
         ),
-        _consumer_ops(model, block, mod_segments, modulation),
+        _consumer_ops(
+            model,
+            block,
+            block_index,
+            mod_segments,
+            modulation,
+            adapters,
+        ),
     )
 
 
 def _recompute_block_parts(
     model: MiniMaxH3Model,
     block,
+    block_index: int,
     layout: PackedLayout,
     mod_segments: list[tuple[int, int, int]],
     t_emb: torch.Tensor,
+    adapters,
 ) -> tuple[H3RecomputeProjection, H3BlockOps]:
-    modulation = block.adaln_proj(t_emb)
+    prefix = f"blocks.{block_index}"
+    modulation = _adaln_with_lora(
+        block.adaln_proj,
+        t_emb,
+        adapters,
+        f"{prefix}.adaln_proj.linear",
+    )
     shift_msa, scale_msa = modulation[:2]
     position_ids = layout.position_ids
     attention_features = block.attn.heads * block.attn.head_dim
     active_qkv = {}
+    qkv_adapters = adapters.get(f"{prefix}.attn.qkv_proj", ())
 
     def normalized(tile: torch.Tensor, start: int, stop: int) -> torch.Tensor:
         tile = block.norm1(tile)
@@ -629,6 +839,7 @@ def _recompute_block_parts(
     ) -> None:
         tile = normalized(tile, start, stop)
         q = _project_int8_rows(active_qkv, tile, 0, attention_features)
+        _add_lora_rows_(q, tile, qkv_adapters, 0, attention_features)
         q = _single_qk_with_rope(
             block,
             q,
@@ -649,6 +860,13 @@ def _recompute_block_parts(
         kv = _project_int8_rows(
             active_qkv,
             tile,
+            attention_features,
+            3 * attention_features,
+        )
+        _add_lora_rows_(
+            kv,
+            tile,
+            qkv_adapters,
             attention_features,
             3 * attention_features,
         )
@@ -676,7 +894,14 @@ def _recompute_block_parts(
                 active_qkv,
             ),
         ),
-        _consumer_ops(model, block, mod_segments, modulation),
+        _consumer_ops(
+            model,
+            block,
+            block_index,
+            mod_segments,
+            modulation,
+            adapters,
+        ),
     )
 
 
@@ -692,6 +917,7 @@ def _run_dit_blocks(
     parts_for,
     softmax_scale: float,
     record,
+    auxiliary=None,
 ) -> torch.Tensor:
     def compute_block(index: int) -> None:
         nonlocal current_hidden, scratch_hidden
@@ -717,7 +943,13 @@ def _run_dit_blocks(
                 softmax_scale=softmax_scale,
             )
 
-    run_weight_stages(blocks, device, compute_block, record=record)
+    run_weight_stages(
+        blocks,
+        device,
+        compute_block,
+        record=record,
+        auxiliary=auxiliary,
+    )
     return current_hidden
 
 
@@ -727,11 +959,18 @@ def _final_rows(
     t_emb: torch.Tensor,
     segment: tuple[int, int, int],
     projection,
+    projection_target: str,
     chunk_tokens: int,
+    adapters,
 ) -> torch.Tensor:
     start, stop, row = segment
     device = t_emb.device
-    shift, scale = model.final_layer.adaln_proj(t_emb)
+    shift, scale = _adaln_with_lora(
+        model.final_layer.adaln_proj,
+        t_emb,
+        adapters,
+        "final_layer.adaln_proj.linear",
+    )
     output = torch.empty(
         (stop - start, projection.out_features),
         dtype=torch.float32,
@@ -743,7 +982,11 @@ def _final_rows(
         tile = (
             model.final_layer.norm(tile) * (1.0 + scale[row]) + shift[row]
         ).to(torch.float32)
-        output[offset - start : end - start] = projection(tile)
+        output[offset - start : end - start] = linear_with_lora(
+            projection,
+            tile,
+            adapters.get(projection_target, ()),
+        )
     return output
 
 
@@ -799,35 +1042,42 @@ def streaming_minimax_h3_forward(
         )
 
     with runtime.lock:
-        (
-            sigma_v,
-            shift_v,
-            shift_a,
-            seg_t,
-            t_row,
-            mod_segments,
-            t_emb,
-        ) = _time_and_modality(
-            model,
-            layout,
-            timestep,
-            payload,
-            transformer_options,
-            video_x.device,
-            dtype,
+        embedding_plan = runtime.lora_state.plan_for(
+            EMBEDDING_STAGE,
+            activation_dtype=dtype,
         )
-        hidden_a = _embed_packed_hidden(
-            model,
-            runtime,
-            layout,
-            video_x,
-            audio_x,
-            context,
-            payload,
-            transformer_options,
-            dtype,
-            runtime.settings.qkv_tile_tokens,
-        )
+        with prepared_lora_stage(embedding_plan, video_x.device) as adapters:
+            (
+                sigma_v,
+                shift_v,
+                shift_a,
+                seg_t,
+                t_row,
+                mod_segments,
+                t_emb,
+            ) = _time_and_modality(
+                model,
+                layout,
+                timestep,
+                payload,
+                transformer_options,
+                video_x.device,
+                dtype,
+                adapters,
+            )
+            hidden_a = _embed_packed_hidden(
+                model,
+                runtime,
+                layout,
+                video_x,
+                audio_x,
+                context,
+                payload,
+                transformer_options,
+                dtype,
+                runtime.settings.qkv_tile_tokens,
+                adapters,
+            )
         sequence_meta = H3SequenceMeta(
             cu_seqlens=torch.tensor([0, layout.seq_len], dtype=torch.int32)
         )
@@ -851,23 +1101,38 @@ def streaming_minimax_h3_forward(
                 if runtime.settings.execution_mode == "recompute"
                 else None
             )
+            lora_streamer = LoRAStageStreamer(
+                [
+                    runtime.lora_state.plan_for(
+                        ("block", index),
+                        activation_dtype=dtype,
+                    )
+                    for index in range(len(blocks))
+                ],
+                video_x.device,
+            )
 
             def parts_for(index: int):
                 block = blocks[index]
+                adapters = lora_streamer.adapters_for(index)
                 if runtime.settings.execution_mode == "recompute":
                     return _recompute_block_parts(
                         model,
                         block,
+                        index,
                         layout,
                         mod_segments,
                         t_emb,
+                        adapters,
                     )
                 return _materialized_block_parts(
                     model,
                     block,
+                    index,
                     layout,
                     mod_segments,
                     t_emb,
+                    adapters,
                 )
 
             hidden_a = _run_dit_blocks(
@@ -881,6 +1146,7 @@ def streaming_minimax_h3_forward(
                 parts_for=parts_for,
                 softmax_scale=first_block.attn.head_dim**-0.5,
                 record=runtime.record_weight_schedule,
+                auxiliary=lora_streamer,
             )
 
         video_seg = next(
@@ -894,12 +1160,31 @@ def streaming_minimax_h3_forward(
             if kind == "audio"
         )
         chunk = runtime.settings.qkv_tile_tokens
-        video_rows = _final_rows(
-            model, hidden_a, t_emb, video_seg, model.final_layer.video_out, chunk
+        final_plan = runtime.lora_state.plan_for(
+            FINAL_STAGE,
+            activation_dtype=dtype,
         )
-        audio_rows = _final_rows(
-            model, hidden_a, t_emb, audio_seg, model.final_layer.audio_out, chunk
-        )
+        with prepared_lora_stage(final_plan, video_x.device) as adapters:
+            video_rows = _final_rows(
+                model,
+                hidden_a,
+                t_emb,
+                video_seg,
+                model.final_layer.video_out,
+                "final_layer.video_out",
+                chunk,
+                adapters,
+            )
+            audio_rows = _final_rows(
+                model,
+                hidden_a,
+                t_emb,
+                audio_seg,
+                model.final_layer.audio_out,
+                "final_layer.audio_out",
+                chunk,
+                adapters,
+            )
 
         video_out = unpatchify_video(
             video_rows,

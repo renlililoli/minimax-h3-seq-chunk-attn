@@ -88,6 +88,32 @@ def test_int8_q_and_kv_row_scale_bias_slices_match_full_projection(monkeypatch):
     assert all(call[3]["convrot"] is True for call in calls)
 
 
+def test_q_and_kv_lora_row_slices_match_full_delta():
+    torch.manual_seed(23)
+    tile = torch.randn(3, 5)
+    adapters = [
+        SimpleNamespace(
+            down=torch.randn(2, 5),
+            up=torch.randn(12, 2),
+            scale=0.75,
+        ),
+        SimpleNamespace(
+            down=torch.randn(3, 5),
+            up=torch.randn(12, 3),
+            scale=-0.25,
+        ),
+    ]
+    full = torch.zeros(3, 12)
+    q = torch.zeros(3, 4)
+    kv = torch.zeros(3, 8)
+
+    streaming._add_lora_rows_(full, tile, adapters, 0, 12)
+    streaming._add_lora_rows_(q, tile, adapters, 0, 4)
+    streaming._add_lora_rows_(kv, tile, adapters, 4, 12)
+
+    torch.testing.assert_close(torch.cat((q, kv), dim=-1), full)
+
+
 def test_single_qk_partial_rope_matches_materialized_kernel():
     torch.manual_seed(17)
     tokens = 3
@@ -138,8 +164,10 @@ def test_attention_epilogue_reads_explicit_residual_host():
     ops = streaming._consumer_ops(
         SimpleNamespace(),
         block,
+        0,
         [(0, 2, 0)],
         modulation,
+        {},
     )
     residual = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     attention = torch.full((2, features), 0.5)
@@ -162,11 +190,28 @@ def test_recompute_schedule_returns_odd_even_ping_pong_buffer(
             destination.copy_(source + 1)
             return destination
 
-    def resident_stages(stages, _device, compute, *, record=None):
+    def resident_stages(
+        stages,
+        _device,
+        compute,
+        *,
+        record=None,
+        auxiliary=None,
+    ):
         del record
-        for index in range(len(stages)):
-            compute(index)
-        return 1
+        try:
+            for index in range(len(stages)):
+                state = None if auxiliary is None else auxiliary.prepare(index)
+                if auxiliary is not None:
+                    auxiliary.wait_ready(state)
+                compute(index)
+                if auxiliary is not None:
+                    auxiliary.compute_end(state)
+                    auxiliary.release(state)
+            return 1
+        finally:
+            if auxiliary is not None:
+                auxiliary.close()
 
     monkeypatch.setattr(streaming, "run_weight_stages", resident_stages)
     result = streaming._run_dit_blocks(

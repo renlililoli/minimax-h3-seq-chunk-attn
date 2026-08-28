@@ -16,6 +16,7 @@ from seqattn_core import (
 )
 
 from .config import load_attention_stage_config
+from .lora import H3LoRAState
 
 
 @dataclass(frozen=True)
@@ -122,9 +123,11 @@ class SeqAttnRuntime:
         _metrics: _SeqAttnRuntimeMetrics | None = None,
         weight_schedule_records: list[dict] | None = None,
         weight_schedule_lock: threading.RLock | None = None,
+        lora_state: H3LoRAState | None = None,
     ):
         settings.validate()
         self.settings = settings
+        self.lora_state = H3LoRAState() if lora_state is None else lora_state
         self.lock = threading.RLock()
         self._runners: dict[tuple, ProjectedAttentionRunner] = {}
         self._dit_runners: dict[tuple, H3MaterializedRunner | H3RecomputeRunner] = {}
@@ -150,6 +153,16 @@ class SeqAttnRuntime:
             _metrics=self._metrics,
             weight_schedule_records=self._weight_schedule_records,
             weight_schedule_lock=self._weight_schedule_lock,
+            lora_state=self.lora_state,
+        )
+
+    def with_lora_state(self, lora_state: H3LoRAState) -> "SeqAttnRuntime":
+        return SeqAttnRuntime(
+            self.settings,
+            _metrics=self._metrics,
+            weight_schedule_records=self._weight_schedule_records,
+            weight_schedule_lock=self._weight_schedule_lock,
+            lora_state=lora_state,
         )
 
     @property

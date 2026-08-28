@@ -7,6 +7,7 @@ import seqattn_core
 import torch
 
 import comfyui_seqattn
+from comfyui_seqattn import lora as lora_mod
 from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
 
@@ -104,6 +105,7 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         == runtime.lifetime_refined_conditioning_cache_stats
     )
     assert clone.refined_conditioning_cache_stats["entries"] == 0
+    assert clone.lora_state is runtime.lora_state
     assert runtime.cache_size == 2
     runtime.record_weight_schedule({"event": "root"})
     clone.record_weight_schedule({"event": "clone"})
@@ -183,10 +185,14 @@ def test_refined_conditioning_fallback_key_uses_tensor_content_and_metadata():
     float_key = streaming._refined_conditioning_cache_key(
         model, first.float(), {}
     )
+    lora_key = streaming._refined_conditioning_cache_key(
+        model, first, {}, (("adapter", 1.0),)
+    )
 
     assert first_key == same_key
     assert first_key != changed_key
     assert first_key != float_key
+    assert first_key != lora_key
     assert (
         streaming._refined_conditioning_cache_key(
             model, first, {"patches": {"attention": object()}}
@@ -199,3 +205,32 @@ def test_refined_conditioning_fallback_key_uses_tensor_content_and_metadata():
         )
         is None
     )
+
+
+def test_runtime_with_lora_state_isolated_but_shares_adapter_tensors():
+    identity = lora_mod.AdapterIdentity("a", "/a", 1, 2)
+    down = torch.ones(1, 2)
+    up = torch.ones(3, 1)
+    layer = lora_mod.LinearLoRA(
+        identity,
+        "blocks.0.attn.out_proj",
+        down,
+        up,
+        None,
+        1,
+        2,
+        3,
+        torch.float32,
+        1.0,
+    )
+    state = lora_mod.H3LoRAState(
+        (lora_mod.LinearLoRABundle(identity, 1.0, (layer,)),),
+        (lora_mod.H3TargetSpec(layer.target, ("block", 0), 2, 3),),
+    )
+    runtime = runtime_mod.SeqAttnRuntime(runtime_mod.SeqAttnSettings())
+    patched = runtime.with_lora_state(state)
+
+    assert patched is not runtime
+    assert patched.lora_state is state
+    assert patched.lora_state.bundles[0].layers[0].down is down
+    assert patched.cache_size == 0

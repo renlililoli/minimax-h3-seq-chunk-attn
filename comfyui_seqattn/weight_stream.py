@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 import comfy.memory_management
 import comfy.model_management
@@ -14,6 +14,20 @@ import torch
 
 RecordCallback = Callable[[dict[str, Any]], None]
 StageCompute = Callable[[int], None]
+
+
+class StageAuxiliary(Protocol):
+    def prepare(self, index: int) -> Any: ...
+
+    def wait_ready(self, state: Any) -> None: ...
+
+    def compute_end(self, state: Any) -> None: ...
+
+    def release(self, state: Any) -> None: ...
+
+    def metrics(self, state: Any, event: str) -> dict[str, Any]: ...
+
+    def close(self) -> None: ...
 
 
 def _stage_modules(stage) -> Iterable:
@@ -108,6 +122,24 @@ def _cleanup_modules(modules: list) -> int:
     return unpinned_bytes
 
 
+def _evict_modules(modules: list, requested_bytes: int) -> int:
+    vbars = {}
+    for module in modules:
+        vbar = module._v[0]
+        vbars[id(vbar)] = vbar
+    freed_bytes = 0
+    remaining = requested_bytes
+    for vbar in vbars.values():
+        if remaining <= 0:
+            break
+        requested = remaining
+        reported = int(vbar.free_memory(requested))
+        freed = min(max(reported, 0), requested)
+        freed_bytes += freed
+        remaining -= freed
+    return freed_bytes
+
+
 @dataclass
 class BlockWeightState:
     index: int
@@ -116,6 +148,7 @@ class BlockWeightState:
     registerable_bytes: int
     staged_bytes: int
     prepared_at: float
+    auxiliary_state: Any = None
     ready: bool = False
     released: bool = False
 
@@ -129,10 +162,12 @@ class BlockWeightStreamer:
         device: torch.device,
         *,
         record: RecordCallback | None = None,
+        auxiliary: StageAuxiliary | None = None,
     ) -> None:
         self.blocks = blocks
         self.device = torch.device(device)
         self.record = record
+        self.auxiliary = auxiliary
         self.started_at = time.perf_counter()
         self.states: dict[int, BlockWeightState] = {}
         self.staged_indices: set[int] = set()
@@ -153,6 +188,11 @@ class BlockWeightStreamer:
     def _emit(self, event: str, state: BlockWeightState, **fields) -> None:
         if self.record is None:
             return
+        auxiliary_fields = (
+            {}
+            if self.auxiliary is None
+            else self.auxiliary.metrics(state.auxiliary_state, event)
+        )
         self.record(
             {
                 "event": event,
@@ -161,6 +201,7 @@ class BlockWeightStreamer:
                 "staged_blocks": sorted(self.staged_indices),
                 "staged_block_count": len(self.staged_indices),
                 "vbar_loaded_mib": self._loaded_bytes() / 2**20,
+                **auxiliary_fields,
                 **fields,
             }
         )
@@ -190,10 +231,11 @@ class BlockWeightStreamer:
                 + ", ".join(collisions)
             )
 
-        registerable_bytes = _registerable_size(modules)
-        materialized_bytes = _materialize_loaded_weight_pins(modules)
         stream = None
-        if modules:
+        auxiliary_state = None
+        try:
+            registerable_bytes = _registerable_size(modules)
+            materialized_bytes = _materialize_loaded_weight_pins(modules)
             stream = comfy.ops.cast_modules_with_vbar(
                 modules,
                 None,
@@ -203,11 +245,21 @@ class BlockWeightStreamer:
             )
             if not comfy.model_management.args.fast_disk:
                 comfy.model_management.ensure_pin_registerable(registerable_bytes)
-        staged_bytes = sum(
-            int(module._v[2])
-            for module in modules
-            if module._prefetch["signature"] is not None
-        )
+            staged_bytes = sum(
+                int(module._v[2])
+                for module in modules
+                if module._prefetch["signature"] is not None
+            )
+            if self.auxiliary is not None:
+                auxiliary_state = self.auxiliary.prepare(index)
+        except Exception:
+            if stream is not None:
+                stream.synchronize()
+            unpinned_bytes = _cleanup_modules(modules)
+            _evict_modules(modules, unpinned_bytes)
+            if self.auxiliary is not None and auxiliary_state is not None:
+                self.auxiliary.release(auxiliary_state)
+            raise
         state = BlockWeightState(
             index=index,
             modules=modules,
@@ -215,6 +267,7 @@ class BlockWeightStreamer:
             registerable_bytes=registerable_bytes,
             staged_bytes=staged_bytes,
             prepared_at=time.perf_counter(),
+            auxiliary_state=auxiliary_state,
         )
         self.states[index] = state
         self.staged_indices.add(index)
@@ -235,6 +288,8 @@ class BlockWeightStreamer:
         blocked_started = time.perf_counter()
         if state.stream is not None:
             state.stream.synchronize()
+        if self.auxiliary is not None:
+            self.auxiliary.wait_ready(state.auxiliary_state)
         blocked_seconds = time.perf_counter() - blocked_started
         state.ready = True
         self._emit(
@@ -252,24 +307,19 @@ class BlockWeightStreamer:
     def compute_end(self, state: BlockWeightState) -> None:
         if self.device.type == "cuda":
             torch.cuda.current_stream(self.device).synchronize()
+        if self.auxiliary is not None:
+            self.auxiliary.compute_end(state.auxiliary_state)
         self._emit("compute_end", state)
 
     def release(self, state: BlockWeightState) -> None:
         if state.released:
             return
         unpinned_bytes = _cleanup_modules(state.modules)
+        freed_bytes = _evict_modules(state.modules, unpinned_bytes)
+        if self.auxiliary is not None:
+            self.auxiliary.release(state.auxiliary_state)
         state.released = True
         self.staged_indices.discard(state.index)
-        freed_bytes = 0
-        remaining = unpinned_bytes
-        for vbar in self._vbars():
-            if remaining <= 0:
-                break
-            requested = remaining
-            reported = int(vbar.free_memory(requested))
-            freed = min(max(reported, 0), requested)
-            freed_bytes += freed
-            remaining -= freed
         self._emit(
             "release",
             state,
@@ -288,6 +338,8 @@ class BlockWeightStreamer:
             if state.stream is not None:
                 state.stream.synchronize()
             self.release(state)
+        if self.auxiliary is not None:
+            self.auxiliary.close()
         self.closed = True
 
 
@@ -297,12 +349,20 @@ def run_weight_stages(
     compute: StageCompute,
     *,
     record: RecordCallback | None = None,
+    auxiliary: StageAuxiliary | None = None,
 ) -> int:
     if not stages:
+        if auxiliary is not None:
+            auxiliary.close()
         return 0
-    streamer = BlockWeightStreamer(stages, device, record=record)
-    current = streamer.prepare(0)
+    streamer = BlockWeightStreamer(
+        stages,
+        device,
+        record=record,
+        auxiliary=auxiliary,
+    )
     try:
+        current = streamer.prepare(0)
         for index in range(len(stages)):
             streamer.wait_ready(current)
             next_state = (
