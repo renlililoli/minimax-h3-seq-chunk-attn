@@ -25,7 +25,7 @@ there first. Consume a reviewed immutable core commit through
 
 As of August 28, 2026, this branch is version `0.4.3`, pins ComfyUI `0.30.0` at
 commit `9a9fdb10ed144ce760d9682cb247526ea23cc525`, and pins SeqAttn commit
-`f09da8cc28113af1b9e18bb016143dbdded6f23f`. Verify current metadata before a
+`5a52f7ea8e83d9187ed39d03e66eccc305eaaaf3`. Verify current metadata before a
 release rather than assuming these values remain current.
 
 ## Start Safely

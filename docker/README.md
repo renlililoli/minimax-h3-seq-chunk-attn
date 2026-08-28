@@ -9,7 +9,7 @@ This image reconstructs the pinned ComfyUI compatibility stack used for the
 - CUDA runtime reported by PyTorch: `12.8`
 - `comfy-aimdo` `0.4.11`
 - ComfyUI-Manager commit `d47c9346190397e1c316bc5a82155faaf9f5d700`
-- `seqattn-core` commit `f09da8cc28113af1b9e18bb016143dbdded6f23f`
+- `seqattn-core` commit `5a52f7ea8e83d9187ed39d03e66eccc305eaaaf3`
 
 The default base is
 `nvcr.io/nvidia/pytorch@sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e`,

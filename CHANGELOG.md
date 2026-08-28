@@ -2,8 +2,17 @@
 
 ## 0.4.3 - 2026-08-28
 
+- Add the dedicated **MiniMax H3 SeqAttn LoRA** node and bundled workflows for
+  three MiniMax-H3 Turbo adapters: FL2VA 4-step, FL2VA 8-step, and Ref2VA
+  4-step.
+- Support chaining ordinary Linear LoRA adapters with independent signed
+  strengths before or after the SeqAttn patch, while keeping the quantized
+  INT8 tensorwise ConvRot base weights immutable.
+- Keep LoRA tensors CPU-resident and stream only the current and next DiT
+  stages through two reusable pinned-host and GPU slots, with focused parser,
+  node, scheduler, real-checkpoint, workflow, and CUDA parity coverage.
 - Update the pinned `seqattn-core[dit]` runtime to `0.3.0a4` at immutable
-  commit `f09da8cc28113af1b9e18bb016143dbdded6f23f` and migrate MiniMax-H3 and
+  commit `5a52f7ea8e83d9187ed39d03e66eccc305eaaaf3` and migrate MiniMax-H3 and
   Qwen callbacks to the explicit materialized projection APIs.
 - Add a deployment-configured MiniMax-H3 `recompute` execution mode that keeps
   hidden states in two pinned CPU buffers and recomputes Q and K/V from bounded
@@ -16,6 +25,9 @@
 - Keep the SeqAttn Docker pin below the fixed framework layers, install core
   before copying node source, and exclude local development state from the
   build context.
+- Document sanitized ComfyUI wall-clock timings for the recent FL2VA and
+  Ref2VA validation runs, including the completed 8-step Ref2VA rerun, without
+  publishing prompt, input-media, or generated-content details.
 
 ## 0.4.2 - 2026-08-27
 

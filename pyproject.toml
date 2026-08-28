@@ -21,7 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-  "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/f09da8cc28113af1b9e18bb016143dbdded6f23f.tar.gz",
+  "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/5a52f7ea8e83d9187ed39d03e66eccc305eaaaf3.tar.gz",
   "tomli>=1.1; python_version < '3.11'",
 ]
 

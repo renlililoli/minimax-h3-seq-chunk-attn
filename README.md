@@ -184,6 +184,27 @@ Import the workflow matching the generation mode:
 | FL2VA Turbo 8-step LoRA | [`minimax_h3_seqattn_fl2va_turbo_8step_lora.json`](workflows/minimax_h3_seqattn_fl2va_turbo_8step_lora.json) | Prompt + optional first/last frames |
 | Ref2VA Turbo 4-step LoRA | [`minimax_h3_seqattn_ref2va_turbo_4step_lora.json`](workflows/minimax_h3_seqattn_ref2va_turbo_4step_lora.json) | Prompt + image/video/audio references |
 
+### Recent Validation Timings
+
+These are ComfyUI `Prompt executed` wall-clock times recorded on August 28,
+2026, with an RTX 5090, ComfyUI `0.30.0` at commit `9a9fdb10`, CUDA 12.8,
+PyTorch `2.10.0+cu128`, and node version `0.4.3`. The runs used the runtime code
+released as `seqattn-core` `0.3.0a4`; the final upstream pin differs only by a
+release-documentation correction. Prompt text, reference media, and generated
+content are intentionally omitted.
+
+| Validation run | Elapsed wall time |
+|---|---:|
+| FL2VA Turbo 4-step, cold | 358.31 s |
+| FL2VA Turbo 4-step, repeated | 58.31 s, 52.70 s, 53.36 s |
+| Ref2VA Turbo 4-step, cold | 251.76 s |
+| Ref2VA Turbo 4-step, repeated | 54.54 s |
+| Long Ref2VA validation, 10 sampler steps | 1081.37 s (18:01.37) |
+| Long Ref2VA rerun, 8 sampler steps | 891.83 s (14:51.83) |
+
+These are functional workflow timings, not throughput benchmarks or
+cross-system performance claims.
+
 The four T2VA/FL2VA workflows use the same FL2VA checkpoint. The first frame
 anchors frame 0; the last frame anchors the final aligned output frame. To
 patch an existing workflow, add **MiniMax H3 SeqAttn** immediately after the
