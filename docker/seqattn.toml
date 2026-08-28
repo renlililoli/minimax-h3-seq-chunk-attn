@@ -2,6 +2,7 @@
 backend = "auto"
 
 [minimax_h3]
+execution_mode = "materialized"
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
 

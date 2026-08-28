@@ -62,10 +62,31 @@ def test_each_selected_stage_reads_only_its_section(tmp_path, monkeypatch):
         config.load_attention_stage_config("minimax_h3_qwen")
 
 
+def test_minimax_h3_execution_mode_is_startup_configuration(tmp_path, monkeypatch):
+    path = tmp_path / "seqattn.toml"
+    path.write_text("[minimax_h3]\nexecution_mode = 'recompute'\n")
+    monkeypatch.setenv("SEQATTN_CONFIG", str(path))
+
+    assert (
+        config.load_attention_stage_config("minimax_h3").execution_mode
+        == "recompute"
+    )
+
+
+def test_qwen_rejects_execution_mode(tmp_path, monkeypatch):
+    path = tmp_path / "seqattn.toml"
+    path.write_text("[minimax_h3_qwen]\nexecution_mode = 'recompute'\n")
+    monkeypatch.setenv("SEQATTN_CONFIG", str(path))
+
+    with pytest.raises(ValueError, match="Qwen always uses materialized"):
+        config.load_attention_stage_config("minimax_h3_qwen")
+
+
 @pytest.mark.parametrize(
     "document, match",
     [
         ("[minimax_h3]\nqkv_tile_tokens = true\n", "qkv_tile_tokens"),
+        ("[minimax_h3]\nexecution_mode = 'fallback'\n", "execution_mode"),
         ("[minimax_h3_qwen]\nmlp_tile_tokens = 0\n", "mlp_tile_tokens"),
         ("[minimax_h3_vae]\ntile_size = 64\n", "tile_size"),
         ("[minimax_h3_vae]\nworkspace_mib = 128\n", "workspace_mib"),

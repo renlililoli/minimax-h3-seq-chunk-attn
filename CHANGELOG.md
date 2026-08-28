@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.3 - 2026-08-28
+
+- Update the pinned `seqattn-core[dit]` runtime to `0.3.0a4` at immutable
+  commit `f09da8cc28113af1b9e18bb016143dbdded6f23f` and migrate MiniMax-H3 and
+  Qwen callbacks to the explicit materialized projection APIs.
+- Add a deployment-configured MiniMax-H3 `recompute` execution mode that keeps
+  hidden states in two pinned CPU buffers and recomputes Q and K/V from bounded
+  GPU tiles during attention instead of materializing complete Q/K/V tensors.
+- Keep `materialized` as the default, reject execution mode configuration for
+  Qwen, and keep execution mode out of node inputs and bundled workflows.
+- Restrict recompute to INT8 tensorwise ConvRot MiniMax-H3 QKV weights and
+  preserve unrotated head dimensions when the checkpoint RoPE width is smaller
+  than the full attention head dimension.
+- Keep the SeqAttn Docker pin below the fixed framework layers, install core
+  before copying node source, and exclude local development state from the
+  build context.
+
 ## 0.4.2 - 2026-08-27
 
 - Add a separate MiniMax-H3 Qwen SeqAttn node with CPU-backed vision and

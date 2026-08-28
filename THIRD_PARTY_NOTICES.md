@@ -48,9 +48,8 @@ commit so the community package does not carry or maintain a second copy of the
 SeqAttn sources.
 
 - Upstream: https://github.com/renlililoli/stream-attn
-- Commit: `86049c058a4dfb26da408e79ca2c95677ebbd250`
-- Upstream tag: `v0.3.0-alpha.3`
-- Package version: `0.3.0a3`
+- Commit: `f09da8cc28113af1b9e18bb016143dbdded6f23f`
+- Package version: `0.3.0a4`
 - Install extra: `dit`
 - License: Apache License 2.0
 

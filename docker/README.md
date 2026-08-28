@@ -9,7 +9,7 @@ This image reconstructs the pinned ComfyUI compatibility stack used for the
 - CUDA runtime reported by PyTorch: `12.8`
 - `comfy-aimdo` `0.4.11`
 - ComfyUI-Manager commit `d47c9346190397e1c316bc5a82155faaf9f5d700`
-- `seqattn-core` commit `86049c058a4dfb26da408e79ca2c95677ebbd250`
+- `seqattn-core` commit `f09da8cc28113af1b9e18bb016143dbdded6f23f`
 
 The default base is
 `nvcr.io/nvidia/pytorch@sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e`,
@@ -41,6 +41,12 @@ Runtime environment variables are kept in `docker/.env`; structured SeqAttn
 settings are kept in `docker/seqattn.toml`. Build-time version and commit pins
 remain in the Dockerfile because changing them creates a different supported
 software image rather than a runtime configuration.
+
+The SeqAttn pin is declared only after the fixed Torch and ComfyUI stack has
+been verified, and core installation happens before node source is copied.
+Changing the core pin therefore preserves the framework cache; changing node
+source preserves the core layer. The repository `.dockerignore` also excludes
+local worktrees, generated output, agent state, and deployment secrets.
 
 Build through Compose from the repository root:
 
@@ -95,6 +101,7 @@ Model weights are intentionally not copied into the image.
 backend = "auto"
 
 [minimax_h3]
+execution_mode = "materialized" # or "recompute"
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
 
@@ -109,10 +116,10 @@ workspace_mib = 512
 
 Connecting a Qwen, DiT, or video VAE patch node selects streaming for that
 stage; wiring around it keeps the native implementation. The Qwen and DiT
-nodes each expose their own Q/KV chunks, while projection/MLP tiles and VAE
-settings come from this TOML file. The shipped Qwen values currently reuse the
-RTX 5090 DiT values and are not presented as an independently calibrated Qwen
-optimum.
+nodes each expose their own Q/KV chunks, while the MiniMax-H3 execution mode,
+projection/MLP tiles, and VAE settings come from this TOML file. Qwen remains
+materialized-only. The shipped Qwen values currently reuse the RTX 5090 DiT
+values and are not presented as an independently calibrated Qwen optimum.
 
 The empty `COMFYUI_RESERVE_VRAM_GIB` and `COMFYUI_VRAM_HEADROOM_GIB` values are
 intentional. They leave whole-process memory policy to the pinned ComfyUI

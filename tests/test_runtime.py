@@ -12,18 +12,22 @@ from comfyui_seqattn import runtime as runtime_mod
 
 
 def test_seqattn_dependency_version():
-    assert seqattn_core.__version__ == "0.3.0a3"
-    assert comfyui_seqattn.__version__ == "0.4.2"
+    assert seqattn_core.__version__ == "0.3.0a4"
+    assert comfyui_seqattn.__version__ == "0.4.3"
 
 
 def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
     runtime_mod.SeqAttnSettings().validate()
+    assert runtime_mod.SeqAttnSettings().execution_mode == "materialized"
     with pytest.raises(ValueError, match="positive"):
         runtime_mod.SeqAttnSettings(q_chunk_tokens=0).validate()
+    with pytest.raises(ValueError, match="execution_mode"):
+        runtime_mod.SeqAttnSettings(execution_mode="fallback").validate()
 
     config_path = tmp_path / "seqattn.toml"
     config_path.write_text(
         "[minimax_h3]\n"
+        "execution_mode = 'recompute'\n"
         "qkv_tile_tokens = 1024\n"
         "mlp_tile_tokens = 512\n"
     )
@@ -33,6 +37,7 @@ def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
         kv_chunk_tokens=4096,
     )
     assert settings.q_chunk_tokens == 3840
+    assert settings.execution_mode == "recompute"
     assert settings.kv_chunk_tokens == 4096
     assert settings.qkv_tile_tokens == 1024
     assert settings.mlp_tile_tokens == 512
@@ -46,12 +51,12 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         def __init__(self, plan, attention_config, pipeline_config):
             created.append((plan, attention_config, pipeline_config))
 
-    class FakeDiTRunner:
+    class FakeMaterializedRunner:
         def __init__(self, projected, **kwargs):
             created_dit.append((projected, kwargs))
 
     monkeypatch.setattr(runtime_mod, "ProjectedAttentionRunner", FakeRunner)
-    monkeypatch.setattr(runtime_mod, "H3DiTRunner", FakeDiTRunner)
+    monkeypatch.setattr(runtime_mod, "H3MaterializedRunner", FakeMaterializedRunner)
     monkeypatch.setattr(runtime_mod, "build_plan", lambda **kwargs: kwargs)
 
     runtime = runtime_mod.SeqAttnRuntime(runtime_mod.SeqAttnSettings())
@@ -116,6 +121,49 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
     assert runtime.cache_size == 0
     assert runtime.refined_conditioning_cache_stats["entries"] == 0
     assert runtime.last_refined_conditioning_cache_stats is None
+
+
+def test_recompute_runtime_constructs_and_caches_recompute_runner(monkeypatch):
+    created_attention = []
+    created_runners = []
+
+    class FakeRecomputedAttention:
+        def __init__(self, plan, **kwargs):
+            created_attention.append((plan, kwargs))
+
+    class FakeRecomputeRunner:
+        def __init__(self, attention, **kwargs):
+            created_runners.append((attention, kwargs))
+
+    monkeypatch.setattr(runtime_mod, "RecomputedAttentionRunner", FakeRecomputedAttention)
+    monkeypatch.setattr(runtime_mod, "H3RecomputeRunner", FakeRecomputeRunner)
+    monkeypatch.setattr(runtime_mod, "build_plan", lambda **kwargs: kwargs)
+
+    settings = runtime_mod.SeqAttnSettings(execution_mode="recompute")
+    runtime = runtime_mod.SeqAttnRuntime(settings)
+    first = runtime.dit_runner_for(
+        tokens=257,
+        hidden_features=256,
+        heads=4,
+        head_dim=128,
+        dtype=torch.bfloat16,
+        device=torch.device("cuda:0"),
+    )
+    second = runtime.dit_runner_for(
+        tokens=257,
+        hidden_features=256,
+        heads=4,
+        head_dim=128,
+        dtype=torch.bfloat16,
+        device=torch.device("cuda:0"),
+    )
+
+    assert first is second
+    assert len(created_attention) == 1
+    assert created_attention[0][1]["require_pinned_hidden"] is True
+    assert len(created_runners) == 1
+    assert created_runners[0][1]["mlp_chunk_tokens"] == settings.mlp_tile_tokens
+    assert runtime.clone().settings.execution_mode == "recompute"
 
 
 def test_refined_conditioning_fallback_key_uses_tensor_content_and_metadata():

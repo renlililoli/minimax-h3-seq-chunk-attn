@@ -11,7 +11,8 @@ from dataclasses import dataclass
 import torch
 from seqattn_core import (
     H3BlockOps,
-    H3DiTRunner,
+    H3MaterializedProjection,
+    H3MaterializedRunner,
     H3SequenceMeta,
     ProjectedAttentionRunner,
     ProjectionPipelineConfig,
@@ -261,7 +262,7 @@ class QwenEncodeRuntime:
     def __init__(self, settings: QwenSeqAttnSettings, device: torch.device):
         self.settings = settings
         self.device = torch.device(device)
-        self.runners: list[H3DiTRunner] = []
+        self.runners: list[H3MaterializedRunner] = []
         self.closed = False
 
     def runner(
@@ -272,7 +273,7 @@ class QwenEncodeRuntime:
         q_heads: int,
         kv_heads: int,
         head_dim: int,
-    ) -> H3DiTRunner:
+    ) -> H3MaterializedRunner:
         attention_config = StreamingAttentionConfig(
             q_chunk_tokens=self.settings.q_chunk_tokens,
             kv_chunk_tokens=self.settings.kv_chunk_tokens,
@@ -301,7 +302,7 @@ class QwenEncodeRuntime:
                 pin_output=True,
             ),
         )
-        runner = H3DiTRunner(
+        runner = H3MaterializedRunner(
             projected,
             hidden_features=hidden_features,
             mlp_chunk_tokens=self.settings.mlp_tile_tokens,
@@ -310,7 +311,7 @@ class QwenEncodeRuntime:
         self.runners.append(runner)
         return runner
 
-    def release_runner(self, runner: H3DiTRunner) -> None:
+    def release_runner(self, runner: H3MaterializedRunner) -> None:
         try:
             self.runners.remove(runner)
         except ValueError:
@@ -469,7 +470,7 @@ def _vision_embed_to_host(
     torch.cuda.current_stream(device).synchronize()
 
 
-def _vision_block_ops(block, hidden, angles_host, device) -> H3BlockOps:
+def _vision_block_parts(block, angles_host, device):
     from comfy.text_encoders.llama import apply_rope
 
     heads = block.attn.num_heads
@@ -491,22 +492,31 @@ def _vision_block_ops(block, hidden, angles_host, device) -> H3BlockOps:
         q, k = apply_rope(q, k, (cos, sin[..., :half], -sin[..., half:]))
         return q, k, v
 
-    def attention_epilogue(attention: torch.Tensor, start: int, stop: int):
-        residual = hidden[start:stop].to(device=device, non_blocking=True)
+    def attention_epilogue(
+        attention: torch.Tensor,
+        residual_hidden_host: torch.Tensor,
+        start: int,
+        stop: int,
+    ):
+        residual = residual_hidden_host[start:stop].to(device=device, non_blocking=True)
         return residual.add(block.attn.proj(attention.reshape(stop - start, -1)))
 
     def mlp(post_attention: torch.Tensor, _start: int, _stop: int):
         return post_attention.add(block.mlp(block.norm2(post_attention)))
 
-    return H3BlockOps(
-        project_qkv=project_qkv,
-        attention_epilogue=attention_epilogue,
-        mlp=mlp,
-        qkv_lease=lambda: _lease_group(block.attn.qkv),
-        consumer_lease=lambda: _lease_group(
-            block.attn.proj,
-            block.mlp.linear_fc1,
-            block.mlp.linear_fc2,
+    return (
+        H3MaterializedProjection(
+            project_qkv,
+            weight_lease=lambda: _lease_group(block.attn.qkv),
+        ),
+        H3BlockOps(
+            attention_epilogue=attention_epilogue,
+            mlp=mlp,
+            consumer_lease=lambda: _lease_group(
+                block.attn.proj,
+                block.mlp.linear_fc1,
+                block.mlp.linear_fc2,
+            ),
         ),
     )
 
@@ -577,10 +587,12 @@ def _encode_vision(
         block_index = stage_index - 1
         if block_index < len(visual.blocks):
             block = visual.blocks[block_index]
+            projection, ops = _vision_block_parts(block, angles, device)
             runner.run_block_(
                 hidden,
                 sequence_meta,
-                _vision_block_ops(block, hidden, angles, device),
+                projection,
+                ops,
                 softmax_scale=(visual.hidden_size // visual.num_heads) ** -0.5,
                 causal=False,
             )
@@ -694,7 +706,7 @@ def _decoder_position_ids(layout, visuals):
     )
 
 
-def _decoder_block_ops(layer, model, hidden, position_ids, device) -> H3BlockOps:
+def _decoder_block_parts(layer, model, position_ids, device):
     from comfy.text_encoders.llama import apply_rope
 
     attention = layer.self_attn
@@ -721,9 +733,14 @@ def _decoder_block_ops(layer, model, hidden, position_ids, device) -> H3BlockOps
         )
         return q[0].transpose(0, 1), k[0].transpose(0, 1), v
 
-    def attention_epilogue(attention_output: torch.Tensor, start: int, stop: int):
+    def attention_epilogue(
+        attention_output: torch.Tensor,
+        residual_hidden_host: torch.Tensor,
+        start: int,
+        stop: int,
+    ):
         update = attention.o_proj(attention_output.reshape(stop - start, -1))
-        residual = hidden[start:stop].to(device=device, non_blocking=True)
+        residual = residual_hidden_host[start:stop].to(device=device, non_blocking=True)
         return residual.add(update)
 
     def mlp(post_attention: torch.Tensor, _start: int, _stop: int):
@@ -733,20 +750,24 @@ def _decoder_block_ops(layer, model, hidden, position_ids, device) -> H3BlockOps
         gate.mul_(layer.mlp.up_proj(tile))
         return residual.add(layer.mlp.down_proj(gate))
 
-    return H3BlockOps(
-        project_qkv=project_qkv,
-        attention_epilogue=attention_epilogue,
-        mlp=mlp,
-        qkv_lease=lambda: _lease_group(
-            attention.q_proj,
-            attention.k_proj,
-            attention.v_proj,
+    return (
+        H3MaterializedProjection(
+            project_qkv,
+            weight_lease=lambda: _lease_group(
+                attention.q_proj,
+                attention.k_proj,
+                attention.v_proj,
+            ),
         ),
-        consumer_lease=lambda: _lease_group(
-            attention.o_proj,
-            layer.mlp.gate_proj,
-            layer.mlp.up_proj,
-            layer.mlp.down_proj,
+        H3BlockOps(
+            attention_epilogue=attention_epilogue,
+            mlp=mlp,
+            consumer_lease=lambda: _lease_group(
+                attention.o_proj,
+                layer.mlp.gate_proj,
+                layer.mlp.up_proj,
+                layer.mlp.down_proj,
+            ),
         ),
     )
 
@@ -788,10 +809,12 @@ def _encode_decoder(
     def compute(stage_index: int):
         layer_index = stage_index
         layer = model.layers[stage_index]
+        projection, ops = _decoder_block_parts(layer, model, position_ids, device)
         runner.run_block_(
             hidden,
             sequence_meta,
-            _decoder_block_ops(layer, model, hidden, position_ids, device),
+            projection,
+            ops,
             softmax_scale=first_attention.head_dim**-0.5,
             causal=True,
         )

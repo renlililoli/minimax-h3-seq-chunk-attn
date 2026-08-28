@@ -7,7 +7,9 @@ from contextlib import ExitStack, contextmanager, nullcontext
 import comfy.ldm.common_dit
 import comfy.ldm.minimax.model as native_minimax
 import comfy.model_management
+import comfy.ops
 import comfy.quant_ops
+import comfy_kitchen
 import torch
 from comfy.ldm.minimax.model import (
     AUDIO_COND_TIMESTEP,
@@ -20,7 +22,12 @@ from comfy.ldm.minimax.model import (
     unpack_audio,
     unpatchify_video,
 )
-from seqattn_core import H3BlockOps, H3SequenceMeta
+from seqattn_core import (
+    H3BlockOps,
+    H3MaterializedProjection,
+    H3RecomputeProjection,
+    H3SequenceMeta,
+)
 
 from .runtime import SeqAttnRuntime
 from .weight_stream import run_weight_stages
@@ -94,6 +101,18 @@ def _audio_velocity(
     return audio_velocity
 
 
+def _rope_for_tile(block, position_ids: torch.Tensor, model, tile: torch.Tensor):
+    tokens = tile.shape[0]
+    angles = model.rope_freqs(position_ids, tile.device)
+    half = angles.shape[-1] // 2
+    ang = angles[:, :half]
+    c, s = torch.cos(ang), torch.sin(ang)
+    rope = torch.stack([c, -s, s, c], dim=-1).reshape(
+        1, tokens, 1, half, 2, 2
+    ).to(tile.dtype)
+    return rope
+
+
 def _qkv_with_rope(block, tile: torch.Tensor, position_ids: torch.Tensor, model):
     tokens = tile.shape[0]
     heads = block.attn.heads
@@ -102,14 +121,7 @@ def _qkv_with_rope(block, tile: torch.Tensor, position_ids: torch.Tensor, model)
     q = q.view(1, tokens, heads, head_dim)
     k = k.view(1, tokens, heads, head_dim)
     v = v.view(tokens, heads, head_dim)
-
-    angles = model.rope_freqs(position_ids, tile.device)
-    half = angles.shape[-1] // 2
-    ang = angles[:, :half]
-    c, s = torch.cos(ang), torch.sin(ang)
-    rope = torch.stack([c, -s, s, c], dim=-1).reshape(
-        1, tokens, 1, half, 2, 2
-    ).to(tile.dtype)
+    rope = _rope_for_tile(block, position_ids, model, tile)
     qw = comfy.model_management.cast_to(block.attn.q_norm.weight, device=tile.device)
     kw = comfy.model_management.cast_to(block.attn.k_norm.weight, device=tile.device)
     rot = rope.shape[-3] * 2
@@ -134,6 +146,124 @@ def _qkv_with_rope(block, tile: torch.Tensor, position_ids: torch.Tensor, model)
             rot_dim=rot,
         )
     return q[0], k[0], v
+
+
+def _single_qk_with_rope(
+    block,
+    projected: torch.Tensor,
+    position_ids: torch.Tensor,
+    model,
+    *,
+    norm,
+) -> torch.Tensor:
+    tokens = projected.shape[0]
+    tensor = projected.view(1, tokens, block.attn.heads, block.attn.head_dim)
+    rope = _rope_for_tile(block, position_ids, model, projected)
+    weight = comfy.model_management.cast_to(norm.weight, device=projected.device)
+    tensor = torch.nn.functional.rms_norm(
+        tensor,
+        (block.attn.head_dim,),
+        weight=weight,
+        eps=norm.eps,
+    )
+    rot = rope.shape[-3] * 2
+    rotated = tensor[..., :rot]
+    pairs = (
+        rotated.reshape(*rotated.shape[:-1], 2, -1)
+        .movedim(-2, -1)
+        .unsqueeze(-2)
+        .to(rope.dtype)
+    )
+    rotated = (rope[..., 0] * pairs[..., 0] + rope[..., 1] * pairs[..., 1])
+    rotated = rotated.movedim(-1, -2).reshape_as(tensor[..., :rot]).to(tensor.dtype)
+    return torch.cat((rotated, tensor[..., rot:]), dim=-1)[0]
+
+
+def _recompute_support_error(qkv_module) -> str | None:
+    quant_format = getattr(qkv_module, "quant_format", None)
+    if quant_format != "int8_tensorwise":
+        return f"quant_format={quant_format!r}"
+    params = getattr(getattr(qkv_module, "weight", None), "_params", None)
+    if params is None or not hasattr(params, "convrot"):
+        return "unknown packed INT8 layout"
+    if not bool(params.convrot):
+        return "int8_tensorwise without ConvRot"
+    if not hasattr(params, "convrot_groupsize"):
+        return "INT8 ConvRot weight has no group-size metadata"
+    return None
+
+
+def _validate_recompute_blocks(blocks: list) -> None:
+    unsupported = []
+    for index, block in enumerate(blocks):
+        reason = _recompute_support_error(block.attn.qkv_proj)
+        if reason is not None:
+            unsupported.append(f"block {index}: {reason}")
+    if unsupported:
+        details = "; ".join(unsupported[:4])
+        if len(unsupported) > 4:
+            details += f"; and {len(unsupported) - 4} more"
+        raise RuntimeError(
+            "MiniMax H3 recompute requires int8_tensorwise QKV weights with "
+            f"ConvRot for every DiT block ({details}). Use execution_mode='materialized'."
+        )
+
+
+@contextmanager
+def _recompute_qkv_lease(qkv_module, device: torch.device, dtype: torch.dtype, active: dict):
+    weight, bias, offload = comfy.ops.cast_bias_weight(
+        qkv_module,
+        input=None,
+        dtype=qkv_module.weight.dtype,
+        device=device,
+        bias_dtype=dtype,
+        offloadable=True,
+        compute_dtype=dtype,
+        want_requant=True,
+    )
+    params = getattr(weight, "_params", None)
+    if not hasattr(weight, "_qdata") or params is None:
+        raise RuntimeError("recompute QKV lease did not produce a quantized INT8 weight")
+    if not bool(getattr(params, "convrot", False)):
+        raise RuntimeError("recompute QKV lease requires ConvRot INT8 weights")
+    active.update(weight=weight, bias=bias)
+    try:
+        yield
+    finally:
+        active.clear()
+        comfy.ops.uncast_bias_weight(qkv_module, weight, bias, offload)
+
+
+def _project_int8_rows(
+    active: dict,
+    tile: torch.Tensor,
+    row_start: int,
+    row_stop: int,
+) -> torch.Tensor:
+    weight = active.get("weight")
+    if weight is None:
+        raise RuntimeError("recompute QKV projector called outside its weight lease")
+    qdata = weight._qdata
+    params = weight._params
+    if qdata.ndim != 2 or not 0 <= row_start < row_stop <= qdata.shape[0]:
+        raise RuntimeError(f"unexpected recompute QKV weight shape: {tuple(qdata.shape)}")
+    scale = params.scale
+    if scale.numel() != 1:
+        if scale.shape[0] != qdata.shape[0]:
+            raise RuntimeError(f"unexpected recompute QKV scale shape: {tuple(scale.shape)}")
+        scale = scale[row_start:row_stop].contiguous()
+    bias = active["bias"]
+    if bias is not None:
+        bias = bias[row_start:row_stop].contiguous()
+    return comfy_kitchen.int8_linear(
+        tile.contiguous(),
+        qdata[row_start:row_stop].contiguous(),
+        scale,
+        bias,
+        out_dtype=tile.dtype,
+        convrot=True,
+        convrot_groupsize=int(params.convrot_groupsize),
+    )
 
 
 def _copy_projected_rows(
@@ -411,56 +541,184 @@ def _time_and_modality(
     return sigma_v, shift_v, shift_a, seg_t, t_row, mod_segments, t_emb
 
 
-def _block_ops(
+def _consumer_ops(
     model: MiniMaxH3Model,
     block,
-    hidden: torch.Tensor,
-    layout: PackedLayout,
     mod_segments: list[tuple[int, int, int]],
-    t_emb: torch.Tensor,
+    modulation: tuple[torch.Tensor, ...],
 ) -> H3BlockOps:
-    device = t_emb.device
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-        block.adaln_proj(t_emb)
-    )
-    position_ids = layout.position_ids
+    del model
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation
+    device = shift_msa.device
 
-    def project_qkv(tile: torch.Tensor, start: int, stop: int):
-        tile = block.norm1(tile)
-        tile = _modulate_tile(
-            tile, shift_msa, scale_msa, mod_segments, start, stop
-        )
-        return _qkv_with_rope(block, tile, position_ids[start:stop], model)
-
-    def attention_epilogue(attention: torch.Tensor, start: int, stop: int):
+    def attention_epilogue(
+        attention: torch.Tensor,
+        residual_hidden_host: torch.Tensor,
+        start: int,
+        stop: int,
+    ):
         update = block.attn.out_proj(attention)
-        residual = hidden[start:stop].to(device, non_blocking=True)
-        return _gate_tile(
-            residual, update, gate_msa, mod_segments, start, stop
-        )
+        residual = residual_hidden_host[start:stop].to(device, non_blocking=True)
+        return _gate_tile(residual, update, gate_msa, mod_segments, start, stop)
 
     def mlp(post_attention: torch.Tensor, start: int, stop: int):
         residual = post_attention
         tile = block.norm2(residual)
-        tile = _modulate_tile(
-            tile, shift_mlp, scale_mlp, mod_segments, start, stop
-        )
+        tile = _modulate_tile(tile, shift_mlp, scale_mlp, mod_segments, start, stop)
         update = block.mlp(tile)
-        return _gate_tile(
-            residual, update, gate_mlp, mod_segments, start, stop
-        )
+        return _gate_tile(residual, update, gate_mlp, mod_segments, start, stop)
 
     return H3BlockOps(
-        project_qkv=project_qkv,
         attention_epilogue=attention_epilogue,
         mlp=mlp,
-        qkv_lease=lambda: _lease_group(block.attn.qkv_proj),
         consumer_lease=lambda: _lease_group(
             block.attn.out_proj,
             block.mlp.fc1,
             block.mlp.fc2,
         ),
     )
+
+
+def _materialized_block_parts(
+    model: MiniMaxH3Model,
+    block,
+    layout: PackedLayout,
+    mod_segments: list[tuple[int, int, int]],
+    t_emb: torch.Tensor,
+) -> tuple[H3MaterializedProjection, H3BlockOps]:
+    modulation = block.adaln_proj(t_emb)
+    shift_msa, scale_msa = modulation[:2]
+    position_ids = layout.position_ids
+
+    def project_qkv(tile: torch.Tensor, start: int, stop: int):
+        tile = block.norm1(tile)
+        tile = _modulate_tile(tile, shift_msa, scale_msa, mod_segments, start, stop)
+        return _qkv_with_rope(block, tile, position_ids[start:stop], model)
+
+    return (
+        H3MaterializedProjection(
+            project_qkv,
+            weight_lease=lambda: _lease_group(block.attn.qkv_proj),
+        ),
+        _consumer_ops(model, block, mod_segments, modulation),
+    )
+
+
+def _recompute_block_parts(
+    model: MiniMaxH3Model,
+    block,
+    layout: PackedLayout,
+    mod_segments: list[tuple[int, int, int]],
+    t_emb: torch.Tensor,
+) -> tuple[H3RecomputeProjection, H3BlockOps]:
+    modulation = block.adaln_proj(t_emb)
+    shift_msa, scale_msa = modulation[:2]
+    position_ids = layout.position_ids
+    attention_features = block.attn.heads * block.attn.head_dim
+    active_qkv = {}
+
+    def normalized(tile: torch.Tensor, start: int, stop: int) -> torch.Tensor:
+        tile = block.norm1(tile)
+        return _modulate_tile(tile, shift_msa, scale_msa, mod_segments, start, stop)
+
+    def project_q(
+        tile: torch.Tensor,
+        destination_q: torch.Tensor,
+        start: int,
+        stop: int,
+    ) -> None:
+        tile = normalized(tile, start, stop)
+        q = _project_int8_rows(active_qkv, tile, 0, attention_features)
+        q = _single_qk_with_rope(
+            block,
+            q,
+            position_ids[start:stop],
+            model,
+            norm=block.attn.q_norm,
+        )
+        destination_q.copy_(q)
+
+    def project_kv(
+        tile: torch.Tensor,
+        destination_k: torch.Tensor,
+        destination_v: torch.Tensor,
+        start: int,
+        stop: int,
+    ) -> None:
+        tile = normalized(tile, start, stop)
+        kv = _project_int8_rows(
+            active_qkv,
+            tile,
+            attention_features,
+            3 * attention_features,
+        )
+        k, v = kv.split(attention_features, dim=-1)
+        k = _single_qk_with_rope(
+            block,
+            k,
+            position_ids[start:stop],
+            model,
+            norm=block.attn.k_norm,
+        )
+        destination_k.copy_(k)
+        destination_v.copy_(
+            v.view(tile.shape[0], block.attn.heads, block.attn.head_dim)
+        )
+
+    return (
+        H3RecomputeProjection(
+            project_q,
+            project_kv,
+            weight_lease=lambda: _recompute_qkv_lease(
+                block.attn.qkv_proj,
+                t_emb.device,
+                t_emb.dtype,
+                active_qkv,
+            ),
+        ),
+        _consumer_ops(model, block, mod_segments, modulation),
+    )
+
+
+def _run_dit_blocks(
+    *,
+    runner,
+    blocks: list,
+    device: torch.device,
+    sequence_meta: H3SequenceMeta,
+    current_hidden: torch.Tensor,
+    scratch_hidden: torch.Tensor | None,
+    execution_mode: str,
+    parts_for,
+    softmax_scale: float,
+    record,
+) -> torch.Tensor:
+    def compute_block(index: int) -> None:
+        nonlocal current_hidden, scratch_hidden
+        projection, ops = parts_for(index)
+        if execution_mode == "recompute":
+            if scratch_hidden is None:
+                raise RuntimeError("recompute requires a scratch hidden buffer")
+            result = runner.run_block(
+                current_hidden,
+                scratch_hidden,
+                sequence_meta,
+                projection,
+                ops,
+                softmax_scale=softmax_scale,
+            )
+            current_hidden, scratch_hidden = result, current_hidden
+        else:
+            current_hidden = runner.run_block_(
+                current_hidden,
+                sequence_meta,
+                projection,
+                ops,
+                softmax_scale=softmax_scale,
+            )
+
+    run_weight_stages(blocks, device, compute_block, record=record)
+    return current_hidden
 
 
 def _final_rows(
@@ -575,6 +833,8 @@ def streaming_minimax_h3_forward(
         )
 
         blocks = list(model.blocks)
+        if runtime.settings.execution_mode == "recompute":
+            _validate_recompute_blocks(blocks)
         if blocks:
             first_block = blocks[0]
             runner = runtime.dit_runner_for(
@@ -585,27 +845,41 @@ def streaming_minimax_h3_forward(
                 dtype=hidden_a.dtype,
                 device=video_x.device,
             )
+            current_hidden = hidden_a
+            scratch_hidden = (
+                _pinned_empty(tuple(hidden_a.shape), hidden_a.dtype)
+                if runtime.settings.execution_mode == "recompute"
+                else None
+            )
 
-            def compute_block(index: int) -> None:
+            def parts_for(index: int):
                 block = blocks[index]
-                runner.run_block_(
-                    hidden_a,
-                    sequence_meta,
-                    _block_ops(
+                if runtime.settings.execution_mode == "recompute":
+                    return _recompute_block_parts(
                         model,
                         block,
-                        hidden_a,
                         layout,
                         mod_segments,
                         t_emb,
-                    ),
-                    softmax_scale=first_block.attn.head_dim**-0.5,
+                    )
+                return _materialized_block_parts(
+                    model,
+                    block,
+                    layout,
+                    mod_segments,
+                    t_emb,
                 )
 
-            run_weight_stages(
-                blocks,
-                video_x.device,
-                compute_block,
+            hidden_a = _run_dit_blocks(
+                runner=runner,
+                blocks=blocks,
+                device=video_x.device,
+                sequence_meta=sequence_meta,
+                current_hidden=current_hidden,
+                scratch_hidden=scratch_hidden,
+                execution_mode=runtime.settings.execution_mode,
+                parts_for=parts_for,
+                softmax_scale=first_block.attn.head_dim**-0.5,
                 record=runtime.record_weight_schedule,
             )
 

@@ -115,7 +115,7 @@ require(
 )
 PY
 
-ARG SEQATTN_CORE_COMMIT=86049c058a4dfb26da408e79ca2c95677ebbd250
+ARG SEQATTN_CORE_COMMIT=f09da8cc28113af1b9e18bb016143dbdded6f23f
 RUN python -m pip install \
         --disable-pip-version-check \
         --no-cache-dir \

@@ -222,10 +222,12 @@ def test_packed_vision_block_parity_with_non_divisible_tiles():
         kv_heads=2,
         head_dim=72,
     )
+    projection, ops = qwen._vision_block_parts(block, angles, device)
     runner.run_block_(
         hidden_host,
         H3SequenceMeta(cu_seqlens=cu),
-        qwen._vision_block_ops(block, hidden_host, angles, device),
+        projection,
+        ops,
         softmax_scale=72**-0.5,
         causal=False,
     )

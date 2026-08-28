@@ -19,13 +19,13 @@ of `renlililoli/minimax-h3-seq-chunk-attn`. This worktree owns:
 - GitHub Release and Comfy Registry publication.
 
 The independent core lives at `renlililoli/stream-attn`. Changes to kernels,
-planners, generic projected attention, paged storage, or `H3DiTRunner` belong
+planners, generic projected attention, paged storage, or H3 runners belong
 there first. Consume a reviewed immutable core commit through
 `seqattn-core[dit]`.
 
-As of August 27, 2026, this branch is version `0.4.2`, pins ComfyUI `0.30.0` at
+As of August 28, 2026, this branch is version `0.4.3`, pins ComfyUI `0.30.0` at
 commit `9a9fdb10ed144ce760d9682cb247526ea23cc525`, and pins SeqAttn commit
-`86049c058a4dfb26da408e79ca2c95677ebbd250`. Verify current metadata before a
+`f09da8cc28113af1b9e18bb016143dbdded6f23f`. Verify current metadata before a
 release rather than assuming these values remain current.
 
 ## Start Safely
@@ -101,11 +101,14 @@ Shared SeqAttn TOML configuration:
 backend = "auto"
 
 [minimax_h3]
+execution_mode = "materialized" # or "recompute"
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
 ```
 
 The file is selected through `SEQATTN_CONFIG` or the default user config path.
+Execution mode is deployment configuration, never a node input or workflow
+widget. Qwen remains materialized-only.
 Do not reintroduce an attention `workspace` UI concept. The VAE node has a
 separate `workspace_mib` input and is not part of this rule.
 
@@ -204,6 +207,10 @@ DynamicVRAM switches, allocator settings, caches, and diagnostics.
 build-time compatibility pins into runtime configuration, and do not bake model
 weights into the image.
 
+Keep `SEQATTN_CORE_COMMIT` below the fixed Torch and ComfyUI layers, and install
+the core before copying node source. This preserves the expensive framework
+cache when only the core pin or adapter source changes.
+
 ## Version and Dependency Updates
 
 For every node version change, keep these synchronized:
@@ -237,8 +244,8 @@ identify the core commit first, then use the full SHA.
 6. Create an annotated tag at the tested commit and push it:
 
    ```bash
-   git tag -a v0.4.2 -m 'MiniMax H3 SeqAttn 0.4.2'
-   git push publish v0.4.2
+   git tag -a v0.4.3 -m 'MiniMax H3 SeqAttn 0.4.3'
+   git push publish v0.4.3
    ```
 
 7. Write a non-empty GitHub Release body. Include user-visible changes,
@@ -247,10 +254,10 @@ identify the core commit first, then use the full SHA.
 8. Publish the GitHub Release:
 
    ```bash
-   gh release create v0.4.2 \
+   gh release create v0.4.3 \
      --repo renlililoli/minimax-h3-seq-chunk-attn \
      --verify-tag \
-     --title 'MiniMax H3 SeqAttn 0.4.2' \
+     --title 'MiniMax H3 SeqAttn 0.4.3' \
      --notes-file /path/to/release-notes.md
    ```
 

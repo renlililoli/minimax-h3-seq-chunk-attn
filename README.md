@@ -92,7 +92,8 @@ python -m pip install -e .
 ```
 
 No Git submodules are required. Installation resolves the pinned
-`seqattn-core[dit]` runtime directly from its upstream alpha.3 release commit.
+`seqattn-core[dit]` `0.3.0a4` runtime directly from its immutable upstream
+commit.
 
 ## Requirements
 
@@ -233,6 +234,7 @@ are used.
 backend = "auto"
 
 [minimax_h3]
+execution_mode = "materialized" # or "recompute"
 qkv_tile_tokens = 4096
 mlp_tile_tokens = 4096
 
@@ -245,6 +247,10 @@ tile_size = 192
 workspace_mib = 512
 ```
 
+`minimax_h3.execution_mode` is read when the DiT patch node constructs its
+runtime. `materialized` remains the default; `recompute` is limited to the
+validated INT8 tensorwise ConvRot MiniMax-H3 path. Qwen remains
+materialized-only and does not accept this setting in `[minimax_h3_qwen]`.
 The patch nodes do not impose a whole-process VRAM limit, silently shrink the
 resident query chunk, or fall back to native execution.
 

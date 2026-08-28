@@ -6,9 +6,11 @@ from dataclasses import dataclass
 
 import torch
 from seqattn_core import (
-    H3DiTRunner,
+    H3MaterializedRunner,
+    H3RecomputeRunner,
     ProjectedAttentionRunner,
     ProjectionPipelineConfig,
+    RecomputedAttentionRunner,
     StreamingAttentionConfig,
     build_plan,
 )
@@ -18,6 +20,7 @@ from .config import load_attention_stage_config
 
 @dataclass(frozen=True)
 class SeqAttnSettings:
+    execution_mode: str = "materialized"
     q_chunk_tokens: int = 5760
     kv_chunk_tokens: int = 4096
     qkv_tile_tokens: int = 4096
@@ -25,10 +28,14 @@ class SeqAttnSettings:
 
     @classmethod
     def from_config(
-        cls, *, q_chunk_tokens: int, kv_chunk_tokens: int
+        cls,
+        *,
+        q_chunk_tokens: int,
+        kv_chunk_tokens: int,
     ) -> SeqAttnSettings:
         config = load_attention_stage_config("minimax_h3")
         return cls(
+            execution_mode=config.execution_mode,
             q_chunk_tokens=int(q_chunk_tokens),
             kv_chunk_tokens=int(kv_chunk_tokens),
             qkv_tile_tokens=config.qkv_tile_tokens,
@@ -36,6 +43,8 @@ class SeqAttnSettings:
         )
 
     def validate(self) -> None:
+        if self.execution_mode not in {"materialized", "recompute"}:
+            raise ValueError("execution_mode must be 'materialized' or 'recompute'")
         for name, value in (
             ("q_chunk_tokens", self.q_chunk_tokens),
             ("kv_chunk_tokens", self.kv_chunk_tokens),
@@ -118,7 +127,7 @@ class SeqAttnRuntime:
         self.settings = settings
         self.lock = threading.RLock()
         self._runners: dict[tuple, ProjectedAttentionRunner] = {}
-        self._dit_runners: dict[tuple, H3DiTRunner] = {}
+        self._dit_runners: dict[tuple, H3MaterializedRunner | H3RecomputeRunner] = {}
         self._refined_conditioning_key: tuple | None = None
         self._refined_conditioning: torch.Tensor | None = None
         self._refined_conditioning_hits = 0
@@ -298,7 +307,7 @@ class SeqAttnRuntime:
         head_dim: int,
         dtype: torch.dtype,
         device: torch.device,
-    ) -> H3DiTRunner:
+    ) -> H3MaterializedRunner | H3RecomputeRunner:
         device = torch.device(device)
         enable_nvtx = os.environ.get("SEQATTN_ENABLE_NVTX") == "1"
         key = (
@@ -315,13 +324,6 @@ class SeqAttnRuntime:
         if runner is not None:
             return runner
 
-        pipeline_config = ProjectionPipelineConfig(
-            projection_chunk_tokens=self.settings.qkv_tile_tokens,
-            require_pinned_hidden=True,
-            pin_qkv=True,
-            pin_output=True,
-            enable_nvtx=enable_nvtx,
-        )
         attention_config = StreamingAttentionConfig(
             q_chunk_tokens=self.settings.q_chunk_tokens,
             kv_chunk_tokens=self.settings.kv_chunk_tokens,
@@ -341,17 +343,37 @@ class SeqAttnRuntime:
             max_kv_tokens=tokens,
             config=attention_config,
         )
-        projected = ProjectedAttentionRunner(
-            plan,
-            attention_config=attention_config,
-            pipeline_config=pipeline_config,
-        )
-        runner = H3DiTRunner(
-            projected,
-            hidden_features=hidden_features,
-            mlp_chunk_tokens=self.settings.mlp_tile_tokens,
-            num_final_output_buffers=2,
-        )
+        if self.settings.execution_mode == "materialized":
+            projected = ProjectedAttentionRunner(
+                plan,
+                attention_config=attention_config,
+                pipeline_config=ProjectionPipelineConfig(
+                    projection_chunk_tokens=self.settings.qkv_tile_tokens,
+                    require_pinned_hidden=True,
+                    pin_qkv=True,
+                    pin_output=True,
+                    enable_nvtx=enable_nvtx,
+                ),
+            )
+            runner = H3MaterializedRunner(
+                projected,
+                hidden_features=hidden_features,
+                mlp_chunk_tokens=self.settings.mlp_tile_tokens,
+                num_final_output_buffers=2,
+            )
+        else:
+            recomputed = RecomputedAttentionRunner(
+                plan,
+                hidden_features=hidden_features,
+                attention_config=attention_config,
+                require_pinned_hidden=True,
+                enable_nvtx=enable_nvtx,
+            )
+            runner = H3RecomputeRunner(
+                recomputed,
+                mlp_chunk_tokens=self.settings.mlp_tile_tokens,
+                num_final_output_buffers=2,
+            )
         self._dit_runners[key] = runner
         return runner
 

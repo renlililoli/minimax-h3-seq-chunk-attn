@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minimax-h3-seqattn"
-version = "0.4.2"
+version = "0.4.3"
 # comfy-cli publishes this field as the Comfy Registry node description.
 description = "**MiniMax H3 SeqAttn brings long-sequence MiniMax-H3 generation to low-VRAM ComfyUI setups.** By streaming long-sequence activations through CPU memory and processing attention and MLPs in fixed-size GPU tiles, **denoising VRAM stays bounded instead of growing with sequence length**. The checked-in 8 GiB validation belongs to version 0.4.0's fused DiT path and retired Qwen offload implementation; it is not a Qwen SeqAttn performance claim."
 readme = "README.md"
@@ -21,7 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-  "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/86049c058a4dfb26da408e79ca2c95677ebbd250.tar.gz",
+  "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/f09da8cc28113af1b9e18bb016143dbdded6f23f.tar.gz",
   "tomli>=1.1; python_version < '3.11'",
 ]
 
