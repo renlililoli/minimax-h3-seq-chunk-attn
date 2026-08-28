@@ -14,7 +14,6 @@ ARG TORCHAUDIO_VERSION=2.10.0+cu128
 ARG TORCH_CUDA_VERSION=12.8
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 ARG COMFY_AIMDO_VERSION=0.4.11
-ARG SEQATTN_CORE_COMMIT=86049c058a4dfb26da408e79ca2c95677ebbd250
 
 LABEL org.opencontainers.image.title="MiniMax H3 SeqAttn for ComfyUI"
 LABEL org.opencontainers.image.description="Pinned ComfyUI 0.30.0 and CUDA 12.8 runtime for NVIDIA RTX 50-series GPUs"
@@ -22,7 +21,6 @@ LABEL org.opencontainers.image.source="https://github.com/renlililoli/minimax-h3
 LABEL io.seqattn.comfyui.version="${COMFYUI_VERSION}"
 LABEL io.seqattn.comfyui.commit="${COMFYUI_COMMIT}"
 LABEL io.seqattn.comfyui-manager.commit="${COMFYUI_MANAGER_COMMIT}"
-LABEL io.seqattn.seqattn-core.commit="${SEQATTN_CORE_COMMIT}"
 
 USER root
 
@@ -117,31 +115,29 @@ require(
 )
 PY
 
-RUN install -d /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn
-COPY __init__.py pyproject.toml README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md \
-    /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/
-COPY comfyui_seqattn/ \
-    /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/comfyui_seqattn/
-COPY workflows/ /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn/workflows/
-COPY docker/seqattn.toml /etc/seqattn/config.toml
-COPY docker/entrypoint.sh /opt/seqattn/bin/start-comfyui
-RUN chmod 0755 /opt/seqattn/bin/start-comfyui
-
-WORKDIR /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn
+ARG SEQATTN_CORE_COMMIT=86049c058a4dfb26da408e79ca2c95677ebbd250
 RUN python -m pip install \
         --disable-pip-version-check \
         --no-cache-dir \
         --no-build-isolation \
         --no-deps \
-        "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/${SEQATTN_CORE_COMMIT}.tar.gz" \
-    && python -m pip install \
+        "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/${SEQATTN_CORE_COMMIT}.tar.gz"
+
+WORKDIR /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn
+COPY __init__.py pyproject.toml README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md ./
+COPY comfyui_seqattn/ ./comfyui_seqattn/
+RUN python -m pip install \
         --disable-pip-version-check \
         --no-cache-dir \
         --no-build-isolation \
         --no-deps \
         .
 
-RUN SEQATTN_CORE_COMMIT="${SEQATTN_CORE_COMMIT}" python - <<'PY'
+COPY workflows/ ./workflows/
+COPY docker/seqattn.toml /etc/seqattn/config.toml
+COPY --chmod=0755 docker/entrypoint.sh /opt/seqattn/bin/start-comfyui
+
+RUN python - <<'PY'
 from importlib.metadata import version
 
 import comfy_aimdo.control
@@ -154,6 +150,8 @@ print(f"MiniMax H3 SeqAttn {node_version}")
 print(f"seqattn-core {version('seqattn-core')}")
 print(f"seqattn module {seqattn_core.__file__}")
 PY
+
+LABEL io.seqattn.seqattn-core.commit="${SEQATTN_CORE_COMMIT}"
 
 ENV CUDA_MODULE_LOADING=LAZY \
     MALLOC_ARENA_MAX=2 \
@@ -182,8 +180,7 @@ RUN python -m pip install \
         "pytest==${PYTEST_VERSION}" \
         "ruff==${RUFF_VERSION}"
 
-COPY docker/check.sh /opt/seqattn/bin/check-repo
-RUN chmod 0755 /opt/seqattn/bin/check-repo
+COPY --chmod=0755 docker/check.sh /opt/seqattn/bin/check-repo
 
 WORKDIR /workspace
 CMD ["/opt/seqattn/bin/check-repo"]
