@@ -111,9 +111,10 @@ Ref2VA workflow template is intentionally a stress case and may exceed a single
 64 GiB NUMA node during video decode.
 
 The attention and Qwen activation paths use BF16 regardless of checkpoint
-storage precision. The Qwen node requires `CLIPLoader` device `default`. LoRA,
-diffusion-model replacement patches, NVMe activation backing, and multi-GPU
-execution are not currently supported.
+storage precision. The Qwen node requires `CLIPLoader` device `default`.
+Ordinary Linear LoRA is supported through the dedicated **MiniMax H3 SeqAttn
+LoRA** node described below. Diffusion-model replacement patches, NVMe
+activation backing, and multi-GPU execution are not currently supported.
 
 The extension rejects other reported ComfyUI versions during entrypoint
 loading with an explicit compatibility error. This avoids silently treating a
@@ -153,6 +154,10 @@ ComfyUI/models/
 |-- diffusion_models/
 |   |-- minimax_h3_fl2va_pruned_int8_convrot.safetensors
 |   `-- minimax_h3_ref2va_pruned_int8_convrot.safetensors
+|-- loras/
+|   |-- minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors
+|   |-- minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors
+|   `-- minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors
 |-- text_encoders/
 |   `-- qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
 `-- vae/
@@ -174,6 +179,9 @@ Import the workflow matching the generation mode:
 | FL2VA | [`minimax_h3_seqattn_fl2va.json`](workflows/minimax_h3_seqattn_fl2va.json) | Prompt + first and last frames |
 | Ref2VA | [`minimax_h3_seqattn_ref2va.json`](workflows/minimax_h3_seqattn_ref2va.json) | Prompt + image/video/audio references |
 | Ref2VA long 2-step validation | [`minimax_h3_seqattn_ref2va_long_2step.json`](workflows/minimax_h3_seqattn_ref2va_long_2step.json) | User-provided 243-frame reference video + audio |
+| FL2VA Turbo 4-step LoRA | [`minimax_h3_seqattn_fl2va_turbo_4step_lora.json`](workflows/minimax_h3_seqattn_fl2va_turbo_4step_lora.json) | Prompt + optional first/last frames |
+| FL2VA Turbo 8-step LoRA | [`minimax_h3_seqattn_fl2va_turbo_8step_lora.json`](workflows/minimax_h3_seqattn_fl2va_turbo_8step_lora.json) | Prompt + optional first/last frames |
+| Ref2VA Turbo 4-step LoRA | [`minimax_h3_seqattn_ref2va_turbo_4step_lora.json`](workflows/minimax_h3_seqattn_ref2va_turbo_4step_lora.json) | Prompt + image/video/audio references |
 
 The four T2VA/FL2VA workflows use the same FL2VA checkpoint. The first frame
 anchors frame 0; the last frame anchors the final aligned output frame. To
@@ -184,6 +192,34 @@ the video VAE through **MiniMax H3 VAE Streaming**. Each patch is independent:
 connect it to select streaming for that stage, or wire around it to keep the
 native ComfyUI implementation. There is no node-level `enabled` switch and no
 silent native fallback after a streaming error.
+
+### LoRA
+
+Use **MiniMax H3 SeqAttn LoRA** instead of ComfyUI's standard LoRA loader for
+the diffusion model. The recommended order is:
+
+```text
+UNETLoader -> MiniMax H3 SeqAttn LoRA -> MiniMax H3 SeqAttn
+```
+
+Multiple adapters can be chained by adding more SeqAttn LoRA nodes. Applying
+the LoRA node after **MiniMax H3 SeqAttn** is also supported, but the dedicated
+workflows keep all adapter selection directly after the model loader. Each
+node has an independent signed `strength_model`; a zero-strength adapter stays
+in the model signature and cache identity but is omitted from GPU staging.
+
+The v1 adapter path requires the supported 50-block INT8 tensorwise ConvRot
+MiniMax-H3 base. It accepts ordinary Linear A/B LoRA tensors in ComfyUI or PEFT
+naming, including per-layer alpha. It rejects DoRA, convolutional or reshaped
+adapters, diff/set patches, unsupported targets, shape mismatches, unconsumed
+tensors, and models already carrying ordinary ComfyUI weight patches. The base
+quantized tensors are never merged or requantized.
+
+LoRA tensors remain CPU-resident and stream beside the current and next DiT
+weight stages through two reusable pinned-host slots and two reusable GPU
+slots. For the three Turbo adapters listed above, the largest stage is about
+71.75 MiB, so the two-slot maximum is about 143.5 MiB of pinned host memory and
+143.5 MiB of GPU memory in addition to the base streaming path.
 
 The bundled Ref2VA workflow uses **MiniMax H3 Reference to Video (SeqAttn)**.
 It preserves the native reference ordering and payload, but completes Qwen

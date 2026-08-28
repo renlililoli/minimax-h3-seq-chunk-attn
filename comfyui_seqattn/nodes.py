@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 
 import comfy.patcher_extension
+import comfy.utils
+import folder_paths
 import node_helpers
 from comfy.ldm.minimax.model import MiniMaxH3Model
 from comfy_api.v0_0_2 import ComfyExtension, io
@@ -18,12 +20,20 @@ from comfy_extras.nodes_minimax_h3 import (
     MiniMaxH3ReferenceToVideo as NativeMiniMaxH3ReferenceToVideo,
 )
 
+from .lora import (
+    AdapterIdentity,
+    H3LoRAState,
+    build_h3_target_specs,
+    parse_h3_linear_lora,
+    validate_h3_int8_convrot_base,
+)
 from .minimax_h3 import streaming_minimax_h3_forward
 from .qwen import patch_minimax_h3_qwen_seqattn_clip
 from .runtime import SeqAttnRuntime, SeqAttnSettings
 from .vae import patch_minimax_h3_video_vae
 
 STATE_KEY = "minimax_h3_seqattn"
+LORA_STATE_KEY = "minimax_h3_seqattn_lora"
 
 
 def _diffusion_model(model_patcher):
@@ -55,6 +65,28 @@ def _runtime_from_patcher(model_patcher):
     return model_patcher.model_options.get("transformer_options", {}).get(STATE_KEY)
 
 
+def _lora_state_from_patcher(model_patcher) -> H3LoRAState:
+    transformer_options = model_patcher.model_options.get("transformer_options", {})
+    state = transformer_options.get(LORA_STATE_KEY)
+    if isinstance(state, H3LoRAState):
+        return state
+    runtime = transformer_options.get(STATE_KEY)
+    if isinstance(runtime, SeqAttnRuntime):
+        return runtime.lora_state
+    return H3LoRAState()
+
+
+def _validate_unpatched_model_patcher(model_patcher) -> None:
+    patch_keys = set(getattr(model_patcher, "patches", {}))
+    patch_keys.update(getattr(model_patcher, "weight_wrapper_patches", {}))
+    if patch_keys:
+        preview = ", ".join(sorted(str(key) for key in patch_keys)[:4])
+        raise ValueError(
+            "MiniMaxH3SeqAttnLoRA requires an unpatched model; ordinary "
+            f"ComfyUI weight patches are present on {preview}"
+        )
+
+
 def _on_model_clone(original, clone):
     runtime = _runtime_from_patcher(original)
     if isinstance(runtime, SeqAttnRuntime):
@@ -73,14 +105,19 @@ def patch_minimax_h3_model(
     model, *, q_chunk_tokens: int, kv_chunk_tokens: int
 ):
     _diffusion_model(model)
+    lora_state = _lora_state_from_patcher(model)
     patched = model.clone()
     runtime = SeqAttnRuntime(
         SeqAttnSettings.from_config(
             q_chunk_tokens=q_chunk_tokens,
             kv_chunk_tokens=kv_chunk_tokens,
-        )
+        ),
+        lora_state=lora_state,
     )
-    patched.model_options.setdefault("transformer_options", {})[STATE_KEY] = runtime
+    transformer_options = patched.model_options.setdefault("transformer_options", {})
+    transformer_options[STATE_KEY] = runtime
+    if lora_state.bundles:
+        transformer_options[LORA_STATE_KEY] = lora_state
     patched.remove_wrappers_with_key(
         comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, STATE_KEY
     )
@@ -101,6 +138,37 @@ def patch_minimax_h3_model(
     patched.add_callback_with_key(
         comfy.patcher_extension.CallbacksMP.ON_CLEANUP, STATE_KEY, _on_model_cleanup
     )
+    return patched
+
+
+def patch_minimax_h3_lora_model(model, *, lora_name: str, strength_model: float):
+    diffusion_model = _diffusion_model(model)
+    _validate_unpatched_model_patcher(model)
+    specs = build_h3_target_specs(diffusion_model)
+    validate_h3_int8_convrot_base(diffusion_model, specs)
+    lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+    state_dict, _metadata = comfy.utils.load_torch_file(
+        lora_path,
+        safe_load=True,
+        return_metadata=True,
+    )
+    if not isinstance(state_dict, dict):
+        raise ValueError(f"{lora_name} did not contain a tensor state dictionary")
+    identity = AdapterIdentity.from_path(lora_name, lora_path)
+    bundle = parse_h3_linear_lora(
+        state_dict,
+        identity=identity,
+        strength=float(strength_model),
+        specs=specs,
+    )
+    lora_state = _lora_state_from_patcher(model).append(bundle, specs)
+
+    patched = model.clone()
+    transformer_options = patched.model_options.setdefault("transformer_options", {})
+    transformer_options[LORA_STATE_KEY] = lora_state
+    runtime = transformer_options.get(STATE_KEY)
+    if isinstance(runtime, SeqAttnRuntime):
+        transformer_options[STATE_KEY] = runtime.with_lora_state(lora_state)
     return patched
 
 
@@ -144,6 +212,51 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
             kv_chunk_tokens=kv_chunk_tokens,
         )
         return io.NodeOutput(patched)
+
+
+class MiniMaxH3SeqAttnLoRA(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MiniMaxH3SeqAttnLoRA",
+            display_name="MiniMax H3 SeqAttn LoRA",
+            description=(
+                "Stages ordinary Linear LoRA adapters beside the MiniMax-H3 "
+                "INT8 ConvRot base without merging or requantizing its weights."
+            ),
+            category="model/patch/minimax",
+            is_experimental=True,
+            inputs=[
+                io.Model.Input("model"),
+                io.Combo.Input(
+                    "lora_name",
+                    options=folder_paths.get_filename_list("loras"),
+                ),
+                io.Float.Input(
+                    "strength_model",
+                    default=1.0,
+                    min=-20.0,
+                    max=20.0,
+                    step=0.01,
+                ),
+            ],
+            outputs=[io.Model.Output()],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model: io.Model.Type,
+        lora_name: str,
+        strength_model: float,
+    ) -> io.NodeOutput:
+        return io.NodeOutput(
+            patch_minimax_h3_lora_model(
+                model,
+                lora_name=lora_name,
+                strength_model=strength_model,
+            )
+        )
 
 
 class MiniMaxH3QwenSeqAttn(io.ComfyNode):
@@ -378,6 +491,7 @@ class SeqAttnExtension(ComfyExtension):
     async def get_node_list(self):
         return [
             MiniMaxH3SeqAttn,
+            MiniMaxH3SeqAttnLoRA,
             MiniMaxH3QwenSeqAttn,
             MiniMaxH3VAEStreaming,
             MiniMaxH3ReferenceToVideoSeqAttn,
@@ -390,6 +504,7 @@ async def comfy_entrypoint():
 
 __all__ = [
     "MiniMaxH3SeqAttn",
+    "MiniMaxH3SeqAttnLoRA",
     "MiniMaxH3QwenSeqAttn",
     "MiniMaxH3ReferenceToVideoSeqAttn",
     "MiniMaxH3VAEStreaming",
@@ -397,5 +512,6 @@ __all__ = [
     "comfy_entrypoint",
     "minimax_h3_seqattn_wrapper",
     "patch_minimax_h3_model",
+    "patch_minimax_h3_lora_model",
     "patch_minimax_h3_video_vae",
 ]

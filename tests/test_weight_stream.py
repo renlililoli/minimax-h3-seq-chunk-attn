@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -211,6 +212,176 @@ def test_run_weight_stages_uses_current_plus_next_order(monkeypatch):
         ("compute_start", 2, [2]),
         ("compute_end", 2, [2]),
         ("release", 2, []),
+    ]
+
+
+def test_run_weight_stages_forwards_auxiliary_lifecycle(monkeypatch):
+    class FakeVbar:
+        def loaded_size(self):
+            return 0
+
+        def free_memory(self, _size):
+            return 0
+
+    class FakeModule:
+        def __init__(self):
+            self._v = (FakeVbar(), None, 0)
+
+    class Auxiliary:
+        def __init__(self):
+            self.events = []
+
+        def prepare(self, index):
+            state = f"aux-{index}"
+            self.events.append(("prepare", state))
+            return state
+
+        def wait_ready(self, state):
+            self.events.append(("ready", state))
+
+        def compute_end(self, state):
+            self.events.append(("compute_end", state))
+
+        def release(self, state):
+            self.events.append(("release", state))
+
+        def metrics(self, state, event):
+            self.events.append(("metrics", event, state))
+            return {"auxiliary_state": state}
+
+        def close(self):
+            self.events.append(("close",))
+
+    blocks = _plain_blocks(2)
+    modules = {id(block): FakeModule() for block in blocks}
+    monkeypatch.setattr(
+        weight_stream_mod,
+        "_vbar_modules",
+        lambda block: [modules[id(block)]],
+    )
+    monkeypatch.setattr(weight_stream_mod, "_registerable_size", lambda _modules: 0)
+
+    def prepare_modules(prepared, *_args, **_kwargs):
+        for module in prepared:
+            module._prefetch = {"signature": None}
+        return None
+
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.ops, "cast_modules_with_vbar", prepare_modules
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.model_management,
+        "ensure_pin_registerable",
+        lambda _size: None,
+    )
+    auxiliary = Auxiliary()
+    compute_events = []
+
+    weight_stream_mod.run_weight_stages(
+        blocks,
+        torch.device("cpu"),
+        lambda index: compute_events.append(("compute", index)),
+        record=lambda _event: None,
+        auxiliary=auxiliary,
+    )
+
+    assert compute_events == [("compute", 0), ("compute", 1)]
+    assert auxiliary.events == [
+        ("prepare", "aux-0"),
+        ("metrics", "prepare", "aux-0"),
+        ("ready", "aux-0"),
+        ("metrics", "ready", "aux-0"),
+        ("prepare", "aux-1"),
+        ("metrics", "prepare", "aux-1"),
+        ("metrics", "compute_start", "aux-0"),
+        ("compute_end", "aux-0"),
+        ("metrics", "compute_end", "aux-0"),
+        ("release", "aux-0"),
+        ("metrics", "release", "aux-0"),
+        ("ready", "aux-1"),
+        ("metrics", "ready", "aux-1"),
+        ("metrics", "compute_start", "aux-1"),
+        ("compute_end", "aux-1"),
+        ("metrics", "compute_end", "aux-1"),
+        ("release", "aux-1"),
+        ("metrics", "release", "aux-1"),
+        ("close",),
+    ]
+
+
+def test_run_weight_stages_closes_auxiliary_for_empty_stages():
+    closed = []
+    auxiliary = SimpleNamespace(close=lambda: closed.append(True))
+
+    assert (
+        weight_stream_mod.run_weight_stages(
+            [], torch.device("cpu"), lambda _index: None, auxiliary=auxiliary
+        )
+        == 0
+    )
+    assert closed == [True]
+
+
+def test_auxiliary_prepare_failure_rolls_back_vbar_and_closes(monkeypatch):
+    calls = []
+
+    class FakeVbar:
+        def loaded_size(self):
+            return 4096
+
+        def free_memory(self, size):
+            calls.append(("evict", size))
+            return size
+
+    class FakeModule:
+        def __init__(self):
+            self._v = (FakeVbar(), None, 4096)
+
+    class Auxiliary:
+        def prepare(self, index):
+            calls.append(("aux_prepare", index))
+            raise RuntimeError("auxiliary failed")
+
+        def close(self):
+            calls.append(("aux_close",))
+
+    block = _plain_blocks(1)[0]
+    module = FakeModule()
+    monkeypatch.setattr(weight_stream_mod, "_vbar_modules", lambda _block: [module])
+    monkeypatch.setattr(weight_stream_mod, "_registerable_size", lambda _modules: 0)
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.ops,
+        "cast_modules_with_vbar",
+        lambda prepared, *_args, **_kwargs: setattr(
+            prepared[0], "_prefetch", {"signature": object()}
+        ),
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy.model_management,
+        "ensure_pin_registerable",
+        lambda _size: None,
+    )
+    monkeypatch.setattr(
+        weight_stream_mod.comfy_aimdo.model_vbar,
+        "vbar_unpin",
+        lambda value: calls.append(("unpin", value)),
+    )
+    auxiliary = Auxiliary()
+
+    with pytest.raises(RuntimeError, match="auxiliary failed"):
+        weight_stream_mod.run_weight_stages(
+            [block],
+            torch.device("cpu"),
+            lambda _index: None,
+            auxiliary=auxiliary,
+        )
+
+    assert not hasattr(module, "_prefetch")
+    assert calls == [
+        ("aux_prepare", 0),
+        ("unpin", module._v),
+        ("evict", 4096),
+        ("aux_close",),
     ]
 
 

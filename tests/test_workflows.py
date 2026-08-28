@@ -9,6 +9,23 @@ FL2VA_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
 REF2VA_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 REF2VA_WORKFLOW = "minimax_h3_seqattn_ref2va.json"
 REF2VA_LONG_WORKFLOW = "minimax_h3_seqattn_ref2va_long_2step.json"
+TURBO_WORKFLOWS = {
+    "minimax_h3_seqattn_fl2va_turbo_4step_lora.json": (
+        FL2VA_MODEL,
+        "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+        4,
+    ),
+    "minimax_h3_seqattn_fl2va_turbo_8step_lora.json": (
+        FL2VA_MODEL,
+        "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        8,
+    ),
+    "minimax_h3_seqattn_ref2va_turbo_4step_lora.json": (
+        REF2VA_MODEL,
+        "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+        4,
+    ),
+}
 
 WORKFLOW_KEYFRAME_LINKS = {
     "minimax_h3_seqattn_t2va.json": (None, None),
@@ -51,7 +68,12 @@ def test_fl2va_workflows_are_standalone_and_use_safe_defaults():
 
 
 def test_fl2va_workflow_links_match_node_slots():
-    for filename in (*WORKFLOW_KEYFRAME_LINKS, REF2VA_WORKFLOW, REF2VA_LONG_WORKFLOW):
+    for filename in (
+        *WORKFLOW_KEYFRAME_LINKS,
+        REF2VA_WORKFLOW,
+        REF2VA_LONG_WORKFLOW,
+        *TURBO_WORKFLOWS,
+    ):
         workflow = json.loads((WORKFLOW_DIR / filename).read_text())
         nodes = {node["id"]: node for node in workflow["nodes"]}
         links = {link[0]: link for link in workflow["links"]}
@@ -67,6 +89,25 @@ def test_fl2va_workflow_links_match_node_slots():
             for source_slot, output in enumerate(node.get("outputs", [])):
                 for link_id in output.get("links") or []:
                     assert links[link_id][1:3] == [node["id"], source_slot]
+
+
+def test_turbo_workflows_use_dedicated_staged_lora_node():
+    for filename, (base_model, lora_name, steps) in TURBO_WORKFLOWS.items():
+        workflow = json.loads((WORKFLOW_DIR / filename).read_text())
+        nodes = _nodes_by_type(workflow)
+        links = {link[0]: link for link in workflow["links"]}
+
+        loader = nodes["UNETLoader"]
+        lora = nodes["MiniMaxH3SeqAttnLoRA"]
+        seqattn = nodes["MiniMaxH3SeqAttn"]
+        assert loader["widgets_values"][0] == base_model
+        assert lora["widgets_values"] == [lora_name, 1]
+        assert nodes["BasicScheduler"]["widgets_values"][1] == steps
+
+        loader_link = links[lora["inputs"][0]["link"]]
+        seqattn_link = links[seqattn["inputs"][0]["link"]]
+        assert loader_link[1:5] == [loader["id"], 0, lora["id"], 0]
+        assert seqattn_link[1:5] == [lora["id"], 0, seqattn["id"], 0]
 
 
 def test_ref2va_workflow_uses_streaming_vae_and_matching_references():

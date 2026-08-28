@@ -1,21 +1,41 @@
 from __future__ import annotations
 
+import copy
+
 import comfy.ops
 import pytest
 import torch
 from comfy.ldm.minimax.model import MiniMaxH3Model
 
+from comfyui_seqattn import lora as lora_mod
 from comfyui_seqattn import minimax_h3 as streaming
 from comfyui_seqattn import runtime as runtime_mod
 
 
 @pytest.fixture
 def resident_weight_stream(monkeypatch):
-    def run_resident_stages(stages, device, compute, *, record=None):
+    def run_resident_stages(
+        stages,
+        device,
+        compute,
+        *,
+        record=None,
+        auxiliary=None,
+    ):
         del device, record
-        for index in range(len(stages)):
-            compute(index)
-        return min(len(stages), 2)
+        try:
+            for index in range(len(stages)):
+                state = None if auxiliary is None else auxiliary.prepare(index)
+                if auxiliary is not None:
+                    auxiliary.wait_ready(state)
+                compute(index)
+                if auxiliary is not None:
+                    auxiliary.compute_end(state)
+                    auxiliary.release(state)
+            return min(len(stages), 2)
+        finally:
+            if auxiliary is not None:
+                auxiliary.close()
 
     monkeypatch.setattr(streaming, "run_weight_stages", run_resident_stages)
 
@@ -67,6 +87,57 @@ def _assert_outputs_close(actual, expected):
             streamed.float().flatten(), native.float().flatten(), dim=0
         )
         assert cosine.item() >= 0.999
+
+
+def _random_lora_state(model, targets, *, seed=101):
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    specs = lora_mod.build_h3_target_specs(model)
+    specs_by_path = {spec.path: spec for spec in specs}
+    identity = lora_mod.AdapterIdentity("tiny", "/tiny", 1, seed)
+    layers = []
+    for target in targets:
+        spec = specs_by_path[target]
+        rank = 3 if target.endswith("qkv_proj") else 2
+        down = torch.randn(
+            (rank, spec.in_features),
+            generator=generator,
+            dtype=torch.float32,
+        ).mul_(0.02).to(torch.bfloat16)
+        up = torch.randn(
+            (spec.out_features, rank),
+            generator=generator,
+            dtype=torch.float32,
+        ).mul_(0.02).to(torch.bfloat16)
+        layers.append(
+            lora_mod.LinearLoRA(
+                identity,
+                target,
+                down,
+                up,
+                float(rank),
+                rank,
+                spec.in_features,
+                spec.out_features,
+                down.dtype,
+                0.75,
+            )
+        )
+    bundle = lora_mod.LinearLoRABundle(identity, 0.75, tuple(layers))
+    return lora_mod.H3LoRAState((bundle,), specs)
+
+
+def _merge_lora_state(model, state):
+    modules = dict(model.named_modules())
+    specs = {spec.path: spec for spec in state.target_specs}
+    with torch.no_grad():
+        for bundle in state.bundles:
+            for layer in bundle.layers:
+                module = modules[layer.target]
+                dtype = specs[layer.target].compute_dtype or module.weight.dtype
+                delta = layer.up.to(module.weight.device, dtype) @ layer.down.to(
+                    module.weight.device, dtype
+                )
+                module.weight.add_(delta.to(module.weight.dtype), alpha=layer.scale)
 
 
 def test_audio_velocity_supports_old_and_new_comfyui_contracts(monkeypatch):
@@ -122,6 +193,52 @@ def test_one_block_native_streaming_parity(resident_weight_stream):
     )
 
     _assert_outputs_close(actual, native)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@torch.inference_mode()
+def test_tiny_staged_lora_matches_explicit_merged_reference(resident_weight_stream):
+    torch.manual_seed(8)
+    device = torch.device("cuda")
+    model = _tiny_model(
+        device,
+        token_refiner_num_layers=1,
+        text_dim=128,
+    )
+    reference = copy.deepcopy(model)
+    targets = [spec.path for spec in lora_mod.build_h3_target_specs(model)]
+    lora_state = _random_lora_state(model, targets)
+    _merge_lora_state(reference, lora_state)
+
+    video = torch.randn((1, 2, 1, 4, 4), device=device, dtype=torch.bfloat16)
+    audio = torch.randn((1, 4, 2, 2), device=device, dtype=torch.bfloat16)
+    context = torch.randn((1, 3, 128), device=device, dtype=torch.bfloat16)
+    timestep = torch.tensor([550.0], device=device)
+    expected = reference._forward(
+        [video, audio],
+        timestep,
+        context,
+        transformer_options={},
+    )
+    runtime = runtime_mod.SeqAttnRuntime(
+        runtime_mod.SeqAttnSettings(
+            q_chunk_tokens=32,
+            kv_chunk_tokens=64,
+            qkv_tile_tokens=4,
+            mlp_tile_tokens=4,
+        ),
+        lora_state=lora_state,
+    )
+    actual = streaming.streaming_minimax_h3_forward(
+        model,
+        runtime,
+        [video, audio],
+        timestep,
+        context,
+        transformer_options={},
+    )
+
+    _assert_outputs_close(actual, expected)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
