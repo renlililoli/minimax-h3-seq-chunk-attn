@@ -228,6 +228,33 @@ content are intentionally omitted.
 These are functional workflow timings, not throughput benchmarks or
 cross-system performance claims.
 
+### 10-Second FL2VA Denoising Comparison
+
+On September 3, 2026, six completed 10.0-second FL2VA Turbo 4-step LoRA runs
+were collected from two RTX 5090 services. The values below are the elapsed
+times shown by the final ComfyUI sampler `4/4` progress line, so they measure
+the denoising stage rather than the full `Prompt executed` wall time.
+
+| Attention mode | GPU | Denoising samples | Median | Range |
+|---|---:|---:|---:|---:|
+| Sol streaming | 1 | 199 s, 189 s, 189 s | 189 s (3:09) | 189-199 s |
+| Dense | 2 | 298 s, 299 s, 297 s | 298 s (4:58) | 297-299 s |
+
+The Sol median was 109 seconds lower, a 36.6% reduction in denoising elapsed
+time; equivalently, the Dense/Sol median ratio was 1.58x. All six runs used
+1.0 MP at 9:16, the `simple` scheduler, four steps, materialized execution,
+MiniMax-H3 Q/KV chunks of `15360`/`4096`, and Qwen Q/KV chunks of
+`5760`/`4096`. In particular, the Dense samples also used a 15,360-token Q
+chunk and are not a default-Q comparison. Runtime mode was classified from
+each service's mounted TOML, not from the submitted workflow filename.
+
+The services used separate GPUs but shared the host CPU and pinned-memory
+path, and some runs overlapped. Treat these measurements as observed
+functional evidence, not a controlled throughput benchmark. No completed
+10-second Ref2VA sample was collected. Prompt text and video content remain
+omitted; the sanitized run record is in
+[`docs/results/2026-09-03-fl2va-10s-sol-vs-dense.md`](docs/results/2026-09-03-fl2va-10s-sol-vs-dense.md).
+
 The four T2VA/FL2VA workflows use the same FL2VA checkpoint. The first frame
 anchors frame 0; the last frame anchors the final aligned output frame. To
 patch an existing workflow, add **MiniMax H3 SeqAttn** immediately after the
