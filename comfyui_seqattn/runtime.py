@@ -6,26 +6,33 @@ from dataclasses import dataclass
 
 import torch
 from seqattn_core import (
-    H3MaterializedRunner,
-    H3RecomputeRunner,
     ProjectedAttentionRunner,
     ProjectionPipelineConfig,
-    RecomputedAttentionRunner,
     StreamingAttentionConfig,
-    build_plan,
+    build_attention_plan,
+)
+from seqattn_core.dit.minimax_h3 import (
+    H3Config,
+    H3MaterializedRunner,
+    H3RecomputeRunner,
+    build_h3_runner,
+    load_h3_config,
 )
 
-from .config import load_attention_stage_config
 from .lora import H3LoRAState
 
 
 @dataclass(frozen=True)
 class SeqAttnSettings:
     execution_mode: str = "materialized"
+    attention_mode: str = "dense"
     q_chunk_tokens: int = 5760
     kv_chunk_tokens: int = 4096
-    qkv_tile_tokens: int = 4096
-    mlp_tile_tokens: int = 4096
+    projection_tile_tokens: int = 4096
+    ffn_tile_tokens: int = 4096
+    sol_tau: float = 1.0
+    sol_first_dense_step_fraction: float = 0.2
+    sol_first_dense_layers: int = 2
 
     @classmethod
     def from_config(
@@ -34,26 +41,38 @@ class SeqAttnSettings:
         q_chunk_tokens: int,
         kv_chunk_tokens: int,
     ) -> SeqAttnSettings:
-        config = load_attention_stage_config("minimax_h3")
+        config = load_h3_config()
         return cls(
             execution_mode=config.execution_mode,
+            attention_mode=config.attention_mode,
             q_chunk_tokens=int(q_chunk_tokens),
             kv_chunk_tokens=int(kv_chunk_tokens),
-            qkv_tile_tokens=config.qkv_tile_tokens,
-            mlp_tile_tokens=config.mlp_tile_tokens,
+            projection_tile_tokens=config.projection_tile_tokens,
+            ffn_tile_tokens=config.ffn_tile_tokens,
+            sol_tau=config.sol_tau,
+            sol_first_dense_step_fraction=config.sol_first_dense_step_fraction,
+            sol_first_dense_layers=config.sol_first_dense_layers,
+        )
+
+    def h3_config(self) -> H3Config:
+        return H3Config(
+            execution_mode=self.execution_mode,
+            attention_mode=self.attention_mode,
+            projection_tile_tokens=self.projection_tile_tokens,
+            ffn_tile_tokens=self.ffn_tile_tokens,
+            sol_tau=self.sol_tau,
+            sol_first_dense_step_fraction=self.sol_first_dense_step_fraction,
+            sol_first_dense_layers=self.sol_first_dense_layers,
         )
 
     def validate(self) -> None:
-        if self.execution_mode not in {"materialized", "recompute"}:
-            raise ValueError("execution_mode must be 'materialized' or 'recompute'")
         for name, value in (
             ("q_chunk_tokens", self.q_chunk_tokens),
             ("kv_chunk_tokens", self.kv_chunk_tokens),
-            ("qkv_tile_tokens", self.qkv_tile_tokens),
-            ("mlp_tile_tokens", self.mlp_tile_tokens),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        self.h3_config()
 
 
 class _SeqAttnRuntimeMetrics:
@@ -288,7 +307,7 @@ class SeqAttnRuntime:
             require_pinned=True,
             pin_output=True,
         )
-        plan = build_plan(
+        plan = build_attention_plan(
             q_heads=heads,
             kv_heads=heads,
             head_dim=head_dim,
@@ -300,9 +319,8 @@ class SeqAttnRuntime:
         )
         runner = ProjectedAttentionRunner(
             plan,
-            attention_config=attention_config,
-            pipeline_config=ProjectionPipelineConfig(
-                projection_chunk_tokens=self.settings.qkv_tile_tokens,
+            ProjectionPipelineConfig(
+                projection_tile_tokens=self.settings.projection_tile_tokens,
                 require_pinned_hidden=True,
                 pin_qkv=True,
                 pin_output=True,
@@ -346,7 +364,7 @@ class SeqAttnRuntime:
             pin_output=True,
             enable_nvtx=enable_nvtx,
         )
-        plan = build_plan(
+        plan = build_attention_plan(
             q_heads=heads,
             kv_heads=heads,
             head_dim=head_dim,
@@ -356,37 +374,12 @@ class SeqAttnRuntime:
             max_kv_tokens=tokens,
             config=attention_config,
         )
-        if self.settings.execution_mode == "materialized":
-            projected = ProjectedAttentionRunner(
-                plan,
-                attention_config=attention_config,
-                pipeline_config=ProjectionPipelineConfig(
-                    projection_chunk_tokens=self.settings.qkv_tile_tokens,
-                    require_pinned_hidden=True,
-                    pin_qkv=True,
-                    pin_output=True,
-                    enable_nvtx=enable_nvtx,
-                ),
-            )
-            runner = H3MaterializedRunner(
-                projected,
-                hidden_features=hidden_features,
-                mlp_chunk_tokens=self.settings.mlp_tile_tokens,
-                num_final_output_buffers=2,
-            )
-        else:
-            recomputed = RecomputedAttentionRunner(
-                plan,
-                hidden_features=hidden_features,
-                attention_config=attention_config,
-                require_pinned_hidden=True,
-                enable_nvtx=enable_nvtx,
-            )
-            runner = H3RecomputeRunner(
-                recomputed,
-                mlp_chunk_tokens=self.settings.mlp_tile_tokens,
-                num_final_output_buffers=2,
-            )
+        runner = build_h3_runner(
+            plan,
+            hidden_features=hidden_features,
+            config=self.settings.h3_config(),
+            num_output_buffers=2,
+        )
         self._dit_runners[key] = runner
         return runner
 

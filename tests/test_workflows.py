@@ -9,6 +9,18 @@ FL2VA_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
 REF2VA_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 REF2VA_WORKFLOW = "minimax_h3_seqattn_ref2va.json"
 REF2VA_LONG_WORKFLOW = "minimax_h3_seqattn_ref2va_long_2step.json"
+SOL_TURBO_WORKFLOWS = {
+    "minimax_h3_seqattn_fl2va_sol_4step_lora.json": (
+        FL2VA_MODEL,
+        "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+        4,
+    ),
+    "minimax_h3_seqattn_ref2va_sol_4step_lora.json": (
+        REF2VA_MODEL,
+        "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+        4,
+    ),
+}
 TURBO_WORKFLOWS = {
     "minimax_h3_seqattn_fl2va_turbo_4step_lora.json": (
         FL2VA_MODEL,
@@ -25,6 +37,7 @@ TURBO_WORKFLOWS = {
         "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
         4,
     ),
+    **SOL_TURBO_WORKFLOWS,
 }
 
 WORKFLOW_KEYFRAME_LINKS = {
@@ -108,6 +121,30 @@ def test_turbo_workflows_use_dedicated_staged_lora_node():
         seqattn_link = links[seqattn["inputs"][0]["link"]]
         assert loader_link[1:5] == [loader["id"], 0, lora["id"], 0]
         assert seqattn_link[1:5] == [lora["id"], 0, seqattn["id"], 0]
+
+
+def test_sol_turbo_workflows_use_the_gpu1_deployment_contract():
+    for filename in SOL_TURBO_WORKFLOWS:
+        workflow = json.loads((WORKFLOW_DIR / filename).read_text())
+        nodes = _nodes_by_type(workflow)
+        metadata = workflow["extra"]["seqattn"]
+
+        assert nodes["MiniMaxH3SeqAttn"]["widgets_values"] == [15360, 4096]
+        assert nodes["MiniMaxH3QwenSeqAttn"]["widgets_values"] == [5760, 4096]
+        assert nodes["BasicScheduler"]["widgets_values"][1] == 4
+        assert metadata == {
+            "attention_mode": "sol_streaming",
+            "config": "docker/seqattn-sol.toml",
+            "q_chunk_tokens": 15360,
+            "kv_chunk_tokens": 4096,
+        }
+        note = next(
+            node
+            for node in workflow["nodes"]
+            if node["type"] == "MarkdownNote"
+            and "Sol deployment" in node["widgets_values"][0]
+        )
+        assert 'attention_mode = "sol_streaming"' in note["widgets_values"][0]
 
 
 def test_ref2va_workflow_uses_streaming_vae_and_matching_references():

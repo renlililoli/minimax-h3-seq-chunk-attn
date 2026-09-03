@@ -115,13 +115,13 @@ require(
 )
 PY
 
-ARG SEQATTN_CORE_COMMIT=5a52f7ea8e83d9187ed39d03e66eccc305eaaaf3
+ARG SEQATTN_CORE_COMMIT=d8c51ef1e347d76f237478949679a976d8179bde
 RUN python -m pip install \
         --disable-pip-version-check \
         --no-cache-dir \
         --no-build-isolation \
         --no-deps \
-        "seqattn-core[dit] @ https://github.com/renlililoli/stream-attn/archive/${SEQATTN_CORE_COMMIT}.tar.gz"
+        "seqattn-core[dit,sparse] @ https://github.com/renlililoli/stream-attn/archive/${SEQATTN_CORE_COMMIT}.tar.gz"
 
 WORKDIR /opt/ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-SeqAttn
 COPY __init__.py pyproject.toml README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md ./

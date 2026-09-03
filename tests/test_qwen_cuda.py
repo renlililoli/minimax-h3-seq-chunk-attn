@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn.functional as F
-from seqattn_core import H3SequenceMeta
+from seqattn_core.dit.minimax_h3 import H3SequenceMeta
 
 from comfyui_seqattn import qwen
 

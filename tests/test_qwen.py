@@ -46,6 +46,37 @@ def test_settings_read_qwen_tiles_from_shared_config(tmp_path, monkeypatch):
     )
 
 
+def test_qwen_runner_is_explicitly_dense_and_materialized(monkeypatch):
+    created = []
+    monkeypatch.setattr(qwen, "build_attention_plan", lambda **kwargs: kwargs)
+
+    def build_runner(plan, **kwargs):
+        runner = SimpleNamespace(plan=plan, kwargs=kwargs)
+        created.append(runner)
+        return runner
+
+    monkeypatch.setattr(qwen, "build_h3_runner", build_runner)
+    runtime = qwen.QwenEncodeRuntime(
+        qwen.QwenSeqAttnSettings(qkv_tile_tokens=96, mlp_tile_tokens=48),
+        torch.device("cuda:0"),
+    )
+
+    runner = runtime.runner(
+        tokens=128,
+        hidden_features=256,
+        q_heads=4,
+        kv_heads=2,
+        head_dim=64,
+    )
+
+    assert runner is created[0]
+    assert runner.plan["config"].output_mode == "device_consumer"
+    assert runner.kwargs["config"].execution_mode == "materialized"
+    assert runner.kwargs["config"].attention_mode == "dense"
+    assert runner.kwargs["config"].projection_tile_tokens == 96
+    assert runner.kwargs["config"].ffn_tile_tokens == 48
+
+
 def test_cpu_embedding_dequantizes_only_requested_rows(monkeypatch):
     import comfy.quant_ops as quant_ops
 

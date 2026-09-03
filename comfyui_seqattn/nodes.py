@@ -178,7 +178,7 @@ class MiniMaxH3SeqAttn(io.ComfyNode):
         return io.Schema(
             node_id="MiniMaxH3SeqAttn",
             display_name="MiniMax H3 SeqAttn",
-            description="Exact CPU-backed streaming attention for native ComfyUI MiniMax H3 models with BF16 activations, including ComfyUI quantized weights.",
+            description="Bounded CPU-backed dense or streamed Sol attention for native ComfyUI MiniMax H3 models with BF16 activations, including ComfyUI quantized weights.",
             category="model/patch/minimax",
             is_experimental=True,
             inputs=[

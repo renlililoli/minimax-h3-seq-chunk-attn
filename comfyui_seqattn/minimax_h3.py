@@ -23,8 +23,9 @@ from comfy.ldm.minimax.model import (
     unpack_audio,
     unpatchify_video,
 )
-from seqattn_core import (
+from seqattn_core.dit.minimax_h3 import (
     H3BlockOps,
+    H3DenoisingStep,
     H3MaterializedProjection,
     H3RecomputeProjection,
     H3SequenceMeta,
@@ -227,6 +228,86 @@ def _validate_recompute_blocks(blocks: list) -> None:
             "MiniMax H3 recompute requires int8_tensorwise QKV weights with "
             f"ConvRot for every DiT block ({details}). Use execution_mode='materialized'."
         )
+
+
+def _conditioning_prefix_tokens(layout: PackedLayout) -> int:
+    segments = tuple(layout.segments)
+    if not segments or segments[0][0] != 0:
+        raise ValueError("MiniMax H3 packed layout must start at token 0")
+    for previous, current in zip(segments, segments[1:]):
+        if previous[1] != current[0]:
+            raise ValueError("MiniMax H3 packed layout segments must be contiguous")
+    if segments[-1][1] != layout.seq_len:
+        raise ValueError("MiniMax H3 packed layout does not cover the full sequence")
+    target_audio = [start for start, _stop, kind in segments if kind == "audio"]
+    if len(target_audio) != 1:
+        raise ValueError("MiniMax H3 packed layout must contain one target audio segment")
+    return target_audio[0]
+
+
+def _resolve_denoising_step(transformer_options: dict) -> H3DenoisingStep:
+    current = transformer_options.get("sigmas")
+    schedule = transformer_options.get("sample_sigmas")
+    if not isinstance(current, torch.Tensor) or not isinstance(schedule, torch.Tensor):
+        raise RuntimeError(
+            "MiniMax H3 sol_streaming requires ComfyUI sampler metadata "
+            "transformer_options['sigmas'] and ['sample_sigmas']"
+        )
+    if schedule.ndim != 1 or schedule.numel() < 2:
+        raise RuntimeError(
+            "MiniMax H3 sol_streaming requires a one-dimensional sigma schedule "
+            "with at least two entries"
+        )
+    current_values = current.detach().flatten().to(device="cpu", dtype=torch.float64)
+    schedule_values = schedule.detach().to(device="cpu", dtype=torch.float64)
+    if current_values.numel() == 0:
+        raise RuntimeError("MiniMax H3 sol_streaming received an empty current sigma")
+    if not bool(torch.isfinite(current_values).all()) or not bool(
+        torch.isfinite(schedule_values).all()
+    ):
+        raise RuntimeError("MiniMax H3 sol_streaming sigma metadata must be finite")
+    current_sigma = current_values[0]
+    if not bool(
+        torch.isclose(
+            current_values,
+            current_sigma,
+            rtol=1e-4,
+            atol=1e-6,
+        ).all()
+    ):
+        raise RuntimeError(
+            "MiniMax H3 sol_streaming requires one current sigma across the batch"
+        )
+    if not bool((schedule_values[:-1] > schedule_values[1:]).all()):
+        raise RuntimeError(
+            "MiniMax H3 sol_streaming requires a strictly descending sigma schedule"
+        )
+
+    total_steps = schedule_values.numel() - 1
+    exact = torch.isclose(
+        schedule_values,
+        current_sigma,
+        rtol=1e-4,
+        atol=1e-6,
+    ).nonzero(as_tuple=False).flatten()
+    if exact.numel() > 1:
+        raise RuntimeError("MiniMax H3 sol_streaming sigma matched multiple schedule entries")
+    if exact.numel() == 1:
+        step_index = min(int(exact.item()), total_steps - 1)
+    elif current_sigma > schedule_values[0]:
+        # Sampler churn can evaluate slightly above the first scheduled sigma.
+        step_index = 0
+    else:
+        intervals = (
+            (schedule_values[:-1] > current_sigma)
+            & (current_sigma > schedule_values[1:])
+        ).nonzero(as_tuple=False).flatten()
+        if intervals.numel() != 1:
+            raise RuntimeError(
+                "MiniMax H3 sol_streaming current sigma is outside the sampler schedule"
+            )
+        step_index = int(intervals.item())
+    return H3DenoisingStep(step_index=step_index, total_steps=total_steps)
 
 
 @contextmanager
@@ -725,7 +806,7 @@ def _consumer_ops(
         residual = residual_hidden_host[start:stop].to(device, non_blocking=True)
         return _gate_tile(residual, update, gate_msa, mod_segments, start, stop)
 
-    def mlp(post_attention: torch.Tensor, start: int, stop: int):
+    def ffn(post_attention: torch.Tensor, start: int, stop: int):
         residual = post_attention
         tile = block.norm2(residual)
         tile = _modulate_tile(
@@ -749,7 +830,7 @@ def _consumer_ops(
 
     return H3BlockOps(
         attention_epilogue=attention_epilogue,
-        mlp=mlp,
+        ffn=ffn,
         consumer_lease=lambda: _lease_group(
             block.attn.out_proj,
             block.mlp.fc1,
@@ -918,6 +999,7 @@ def _run_dit_blocks(
     softmax_scale: float,
     record,
     auxiliary=None,
+    denoising_step: H3DenoisingStep | None = None,
 ) -> torch.Tensor:
     def compute_block(index: int) -> None:
         nonlocal current_hidden, scratch_hidden
@@ -931,6 +1013,8 @@ def _run_dit_blocks(
                 sequence_meta,
                 projection,
                 ops,
+                block_index=index,
+                denoising_step=denoising_step,
                 softmax_scale=softmax_scale,
             )
             current_hidden, scratch_hidden = result, current_hidden
@@ -940,6 +1024,8 @@ def _run_dit_blocks(
                 sequence_meta,
                 projection,
                 ops,
+                block_index=index,
+                denoising_step=denoising_step,
                 softmax_scale=softmax_scale,
             )
 
@@ -1040,6 +1126,12 @@ def streaming_minimax_h3_forward(
             refs=payload.get("refs"),
             frame_count=payload.get("frame_count"),
         )
+    denoising_step = (
+        _resolve_denoising_step(transformer_options)
+        if runtime.settings.attention_mode == "sol_streaming"
+        else None
+    )
+    conditioning_prefix = _conditioning_prefix_tokens(layout)
 
     with runtime.lock:
         embedding_plan = runtime.lora_state.plan_for(
@@ -1075,11 +1167,12 @@ def streaming_minimax_h3_forward(
                 payload,
                 transformer_options,
                 dtype,
-                runtime.settings.qkv_tile_tokens,
+                runtime.settings.projection_tile_tokens,
                 adapters,
             )
         sequence_meta = H3SequenceMeta(
-            cu_seqlens=torch.tensor([0, layout.seq_len], dtype=torch.int32)
+            cu_seqlens=torch.tensor([0, layout.seq_len], dtype=torch.int32),
+            exact_prefix_tokens=(conditioning_prefix,),
         )
 
         blocks = list(model.blocks)
@@ -1147,6 +1240,7 @@ def streaming_minimax_h3_forward(
                 softmax_scale=first_block.attn.head_dim**-0.5,
                 record=runtime.record_weight_schedule,
                 auxiliary=lora_streamer,
+                denoising_step=denoising_step,
             )
 
         video_seg = next(
@@ -1159,7 +1253,7 @@ def streaming_minimax_h3_forward(
             for a, b, kind in layout.segments
             if kind == "audio"
         )
-        chunk = runtime.settings.qkv_tile_tokens
+        chunk = runtime.settings.projection_tile_tokens
         final_plan = runtime.lora_state.plan_for(
             FINAL_STAGE,
             activation_dtype=dtype,

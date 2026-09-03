@@ -76,8 +76,8 @@ def test_real_quantized_block_native_streaming_parity(monkeypatch, execution_mod
             execution_mode=execution_mode,
             q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            qkv_tile_tokens=4,
-            mlp_tile_tokens=4,
+            projection_tile_tokens=4,
+            ffn_tile_tokens=4,
         )
     )
     actual = streaming.streaming_minimax_h3_forward(
@@ -178,8 +178,8 @@ def test_real_int8_convrot_block_lora_changes_output_without_mutating_base(
         execution_mode=execution_mode,
         q_chunk_tokens=32,
         kv_chunk_tokens=64,
-        qkv_tile_tokens=4,
-        mlp_tile_tokens=4,
+        projection_tile_tokens=4,
+        ffn_tile_tokens=4,
     )
     baseline = streaming.streaming_minimax_h3_forward(
         model,

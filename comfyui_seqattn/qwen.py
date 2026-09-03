@@ -10,14 +10,16 @@ from dataclasses import dataclass
 
 import torch
 from seqattn_core import (
+    StreamingAttentionConfig,
+    build_attention_plan,
+)
+from seqattn_core.dit.minimax_h3 import (
     H3BlockOps,
+    H3Config,
     H3MaterializedProjection,
     H3MaterializedRunner,
     H3SequenceMeta,
-    ProjectedAttentionRunner,
-    ProjectionPipelineConfig,
-    StreamingAttentionConfig,
-    build_plan,
+    build_h3_runner,
 )
 
 from .config import load_attention_stage_config
@@ -282,7 +284,7 @@ class QwenEncodeRuntime:
             require_pinned=True,
             pin_output=True,
         )
-        plan = build_plan(
+        plan = build_attention_plan(
             q_heads=q_heads,
             kv_heads=kv_heads,
             head_dim=head_dim,
@@ -292,21 +294,16 @@ class QwenEncodeRuntime:
             max_kv_tokens=tokens,
             config=attention_config,
         )
-        projected = ProjectedAttentionRunner(
+        runner = build_h3_runner(
             plan,
-            attention_config=attention_config,
-            pipeline_config=ProjectionPipelineConfig(
-                projection_chunk_tokens=self.settings.qkv_tile_tokens,
-                require_pinned_hidden=True,
-                pin_qkv=True,
-                pin_output=True,
-            ),
-        )
-        runner = H3MaterializedRunner(
-            projected,
             hidden_features=hidden_features,
-            mlp_chunk_tokens=self.settings.mlp_tile_tokens,
-            num_final_output_buffers=2,
+            config=H3Config(
+                execution_mode="materialized",
+                attention_mode="dense",
+                projection_tile_tokens=self.settings.qkv_tile_tokens,
+                ffn_tile_tokens=self.settings.mlp_tile_tokens,
+            ),
+            num_output_buffers=2,
         )
         self.runners.append(runner)
         return runner
@@ -501,7 +498,7 @@ def _vision_block_parts(block, angles_host, device):
         residual = residual_hidden_host[start:stop].to(device=device, non_blocking=True)
         return residual.add(block.attn.proj(attention.reshape(stop - start, -1)))
 
-    def mlp(post_attention: torch.Tensor, _start: int, _stop: int):
+    def ffn(post_attention: torch.Tensor, _start: int, _stop: int):
         return post_attention.add(block.mlp(block.norm2(post_attention)))
 
     return (
@@ -511,7 +508,7 @@ def _vision_block_parts(block, angles_host, device):
         ),
         H3BlockOps(
             attention_epilogue=attention_epilogue,
-            mlp=mlp,
+            ffn=ffn,
             consumer_lease=lambda: _lease_group(
                 block.attn.proj,
                 block.mlp.linear_fc1,
@@ -743,7 +740,7 @@ def _decoder_block_parts(layer, model, position_ids, device):
         residual = residual_hidden_host[start:stop].to(device=device, non_blocking=True)
         return residual.add(update)
 
-    def mlp(post_attention: torch.Tensor, _start: int, _stop: int):
+    def ffn(post_attention: torch.Tensor, _start: int, _stop: int):
         residual = post_attention
         tile = layer.post_attention_layernorm(post_attention)
         gate = layer.mlp.activation(layer.mlp.gate_proj(tile))
@@ -761,7 +758,7 @@ def _decoder_block_parts(layer, model, position_ids, device):
         ),
         H3BlockOps(
             attention_epilogue=attention_epilogue,
-            mlp=mlp,
+            ffn=ffn,
             consumer_lease=lambda: _lease_group(
                 attention.o_proj,
                 layer.mlp.gate_proj,

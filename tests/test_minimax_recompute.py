@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from seqattn_core.dit.minimax_h3 import H3DenoisingStep
 
 from comfyui_seqattn import minimax_h3 as streaming
 
@@ -45,6 +46,94 @@ def test_recompute_accepts_int8_tensorwise_convrot():
     ]
 
     streaming._validate_recompute_blocks(blocks)
+
+
+@pytest.mark.parametrize(
+    ("segments", "seq_len", "expected"),
+    [
+        (((0, 3, "text"), (3, 7, "audio"), (7, 15, "video")), 15, 3),
+        (
+            (
+                (0, 3, "text"),
+                (3, 7, "cond"),
+                (7, 11, "audio"),
+                (11, 19, "video"),
+            ),
+            19,
+            7,
+        ),
+        (
+            (
+                (0, 3, "text"),
+                (3, 7, "ref_img"),
+                (7, 11, "ref_audio"),
+                (11, 15, "ref_img"),
+                (15, 19, "audio"),
+                (19, 27, "video"),
+            ),
+            27,
+            15,
+        ),
+    ],
+)
+def test_conditioning_prefix_ends_before_target_audio(segments, seq_len, expected):
+    layout = SimpleNamespace(segments=segments, seq_len=seq_len)
+
+    assert streaming._conditioning_prefix_tokens(layout) == expected
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (1.0, 0),
+        (0.75, 1),
+        (0.6, 1),
+        (0.5, 2),
+        (0.0, 3),
+        (1.05, 0),
+    ],
+)
+def test_denoising_step_uses_sampler_schedule(current, expected):
+    step = streaming._resolve_denoising_step(
+        {
+            "sigmas": torch.tensor([current, current]),
+            "sample_sigmas": torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0]),
+        }
+    )
+
+    assert step == H3DenoisingStep(step_index=expected, total_steps=4)
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({}, "sampler metadata"),
+        (
+            {
+                "sigmas": torch.tensor([0.5, 0.25]),
+                "sample_sigmas": torch.tensor([1.0, 0.5, 0.0]),
+            },
+            "one current sigma",
+        ),
+        (
+            {
+                "sigmas": torch.tensor([0.5]),
+                "sample_sigmas": torch.tensor([1.0, 0.5, 0.5, 0.0]),
+            },
+            "strictly descending",
+        ),
+        (
+            {
+                "sigmas": torch.tensor([-0.1]),
+                "sample_sigmas": torch.tensor([1.0, 0.5, 0.0]),
+            },
+            "outside the sampler schedule",
+        ),
+    ],
+)
+def test_denoising_step_rejects_ambiguous_metadata(options, message):
+    with pytest.raises(RuntimeError, match=message):
+        streaming._resolve_denoising_step(options)
 
 
 def test_int8_q_and_kv_row_scale_bias_slices_match_full_projection(monkeypatch):
@@ -184,9 +273,11 @@ def test_recompute_schedule_returns_odd_even_ping_pong_buffer(
     monkeypatch, blocks, expected_buffer
 ):
     buffers = [torch.full((2, 2), 0.0), torch.full((2, 2), -1.0)]
+    calls = []
 
     class FakeRunner:
-        def run_block(self, source, destination, *_args, **_kwargs):
+        def run_block(self, source, destination, *_args, **kwargs):
+            calls.append(kwargs)
             destination.copy_(source + 1)
             return destination
 
@@ -214,6 +305,7 @@ def test_recompute_schedule_returns_odd_even_ping_pong_buffer(
                 auxiliary.close()
 
     monkeypatch.setattr(streaming, "run_weight_stages", resident_stages)
+    denoising_step = H3DenoisingStep(step_index=2, total_steps=4)
     result = streaming._run_dit_blocks(
         runner=FakeRunner(),
         blocks=[object()] * blocks,
@@ -225,7 +317,55 @@ def test_recompute_schedule_returns_odd_even_ping_pong_buffer(
         parts_for=lambda _index: (object(), object()),
         softmax_scale=1.0,
         record=None,
+        denoising_step=denoising_step,
     )
 
     assert result is buffers[expected_buffer]
     torch.testing.assert_close(result, torch.full((2, 2), float(blocks)))
+    assert [call["block_index"] for call in calls] == list(range(blocks))
+    assert all(call["denoising_step"] is denoising_step for call in calls)
+
+
+def test_materialized_schedule_propagates_block_and_denoising_step(monkeypatch):
+    calls = []
+
+    class FakeRunner:
+        def run_block_(self, hidden, *_args, **kwargs):
+            calls.append(kwargs)
+            hidden.add_(1)
+            return hidden
+
+    def resident_stages(
+        stages,
+        _device,
+        compute,
+        *,
+        record=None,
+        auxiliary=None,
+    ):
+        del record, auxiliary
+        for index in range(len(stages)):
+            compute(index)
+        return 1
+
+    monkeypatch.setattr(streaming, "run_weight_stages", resident_stages)
+    denoising_step = H3DenoisingStep(step_index=2, total_steps=4)
+    hidden = torch.zeros((2, 2))
+    result = streaming._run_dit_blocks(
+        runner=FakeRunner(),
+        blocks=[object()] * 3,
+        device=torch.device("cpu"),
+        sequence_meta=object(),
+        current_hidden=hidden,
+        scratch_hidden=None,
+        execution_mode="materialized",
+        parts_for=lambda _index: (object(), object()),
+        softmax_scale=1.0,
+        record=None,
+        denoising_step=denoising_step,
+    )
+
+    assert result is hidden
+    torch.testing.assert_close(result, torch.full((2, 2), 3.0))
+    assert [call["block_index"] for call in calls] == [0, 1, 2]
+    assert all(call["denoising_step"] is denoising_step for call in calls)

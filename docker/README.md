@@ -9,7 +9,8 @@ This image reconstructs the pinned ComfyUI compatibility stack used for the
 - CUDA runtime reported by PyTorch: `12.8`
 - `comfy-aimdo` `0.4.11`
 - ComfyUI-Manager commit `d47c9346190397e1c316bc5a82155faaf9f5d700`
-- `seqattn-core` commit `5a52f7ea8e83d9187ed39d03e66eccc305eaaaf3`
+- `seqattn-core` `0.4.0a1`, commit
+  `d8c51ef1e347d76f237478949679a976d8179bde`
 
 The default base is
 `nvcr.io/nvidia/pytorch@sha256:38ed2ecb2c16d10677006d73fb0a150855d6ec81db8fc66e800b5ae92741007e`,
@@ -90,6 +91,7 @@ Model weights are intentionally not copied into the image.
 
 - image name and pinned public NVIDIA PyTorch base reference;
 - GPU selection, host UID/GID, host port, and bind-mount paths;
+- `SEQATTN_CONFIG_FILE`, selecting the host TOML mounted into the container;
 - ComfyUI DynamicVRAM, NVML pressure, async offload, reserve, and headroom;
 - CUDA module loading, PyTorch allocator, libc allocator, cache, and NVTX
   switches.
@@ -102,8 +104,12 @@ backend = "auto"
 
 [minimax_h3]
 execution_mode = "materialized" # or "recompute"
-qkv_tile_tokens = 4096
-mlp_tile_tokens = 4096
+attention_mode = "dense" # or "sol_streaming"
+projection_tile_tokens = 4096
+ffn_tile_tokens = 4096
+sol_tau = 1.0
+sol_first_dense_step_fraction = 0.2
+sol_first_dense_layers = 2
 
 [minimax_h3_qwen]
 qkv_tile_tokens = 4096
@@ -114,12 +120,19 @@ tile_size = 192
 workspace_mib = 512
 ```
 
+Use `SEQATTN_CONFIG_FILE=./seqattn-sol.toml` to launch the bundled Sol
+deployment profile. It keeps materialized H3 execution; for a four-step
+workflow, the default warmup keeps the first sampler step and the first two
+layers dense, while leaving Qwen dense and materialized for the full encode.
+
 Connecting a Qwen, DiT, or video VAE patch node selects streaming for that
 stage; wiring around it keeps the native implementation. The Qwen and DiT
 nodes each expose their own Q/KV chunks, while the MiniMax-H3 execution mode,
-projection/MLP tiles, and VAE settings come from this TOML file. Qwen remains
-materialized-only. The shipped Qwen values currently reuse the RTX 5090 DiT
-values and are not presented as an independently calibrated Qwen optimum.
+attention mode, projection/FFN tiles, Sol policy, and VAE settings come from
+this TOML file. Sol is an approximate MiniMax-H3 DiT algorithm and dense
+attention remains the default. Qwen remains dense and materialized-only. The
+shipped Qwen values currently reuse the RTX 5090 DiT values and are not
+presented as an independently calibrated Qwen optimum.
 
 The empty `COMFYUI_RESERVE_VRAM_GIB` and `COMFYUI_VRAM_HEADROOM_GIB` values are
 intentional. They leave whole-process memory policy to the pinned ComfyUI

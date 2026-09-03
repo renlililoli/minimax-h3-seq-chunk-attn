@@ -179,8 +179,8 @@ def test_one_block_native_streaming_parity(resident_weight_stream):
         runtime_mod.SeqAttnSettings(
             q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            qkv_tile_tokens=4,
-            mlp_tile_tokens=4,
+            projection_tile_tokens=4,
+            ffn_tile_tokens=4,
         )
     )
     actual = streaming.streaming_minimax_h3_forward(
@@ -224,8 +224,8 @@ def test_tiny_staged_lora_matches_explicit_merged_reference(resident_weight_stre
         runtime_mod.SeqAttnSettings(
             q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            qkv_tile_tokens=4,
-            mlp_tile_tokens=4,
+            projection_tile_tokens=4,
+            ffn_tile_tokens=4,
         ),
         lora_state=lora_state,
     )
@@ -300,8 +300,8 @@ def test_refined_conditioning_cached_across_denoising_calls(
         runtime_mod.SeqAttnSettings(
             q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            qkv_tile_tokens=4,
-            mlp_tile_tokens=4,
+            projection_tile_tokens=4,
+            ffn_tile_tokens=4,
         )
     )
     try:
@@ -438,8 +438,8 @@ def test_curve_adaln_t2va_fl2va_and_ref2va_layout_parity(
         runtime_mod.SeqAttnSettings(
             q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            qkv_tile_tokens=4,
-            mlp_tile_tokens=4,
+            projection_tile_tokens=4,
+            ffn_tile_tokens=4,
         )
     )
     for payload in payloads:
@@ -479,8 +479,8 @@ def test_full_50_block_tiny_forward_parity(resident_weight_stream):
         runtime_mod.SeqAttnSettings(
             q_chunk_tokens=32,
             kv_chunk_tokens=64,
-            qkv_tile_tokens=4,
-            mlp_tile_tokens=4,
+            projection_tile_tokens=4,
+            ffn_tile_tokens=4,
         )
     )
     actual = streaming.streaming_minimax_h3_forward(
@@ -527,8 +527,8 @@ def test_projected_attention_full_output_parity(tokens):
         runtime_mod.SeqAttnSettings(
             q_chunk_tokens=256,
             kv_chunk_tokens=256,
-            qkv_tile_tokens=257,
-            mlp_tile_tokens=257,
+            projection_tile_tokens=257,
+            ffn_tile_tokens=257,
         )
     )
     runner = runtime.runner_for(

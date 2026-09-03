@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+SEQATTN_CORE_COMMIT = "d8c51ef1e347d76f237478949679a976d8179bde"
 
 
 def test_compose_builds_the_runtime_stage():
@@ -13,6 +14,18 @@ def test_compose_builds_the_runtime_stage():
     assert "      target: runtime" in lines[build_start:ports_start]
     assert '    user: "${HOST_UID}:${HOST_GID}"' in lines[build_start:ports_start]
     assert "      HOME: /opt/ComfyUI/user" in lines
+
+
+def test_compose_can_select_the_sol_deployment_config():
+    compose = (REPOSITORY_ROOT / "docker" / "compose.yaml").read_text()
+    environment = (REPOSITORY_ROOT / "docker" / ".env.example").read_text()
+    sol_config = (REPOSITORY_ROOT / "docker" / "seqattn-sol.toml").read_text()
+
+    assert "${SEQATTN_CONFIG_FILE:-./seqattn.toml}" in compose
+    assert "SEQATTN_CONFIG_FILE=./seqattn.toml" in environment
+    assert 'attention_mode = "sol_streaming"' in sol_config
+    assert "sol_first_dense_step_fraction = 0.2" in sol_config
+    assert "sol_first_dense_layers = 2" in sol_config
 
 
 def test_environment_template_declares_host_user_mapping():
@@ -71,6 +84,19 @@ def test_third_party_notices_cover_docker_inputs():
     assert "GNU General Public License v3.0" in notices
 
 
+def test_seqattn_core_pin_and_sparse_extra_are_synchronized():
+    pyproject = (REPOSITORY_ROOT / "pyproject.toml").read_text()
+    dockerfile = (REPOSITORY_ROOT / "docker" / "Dockerfile").read_text()
+    notices = (REPOSITORY_ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+    docker_readme = (REPOSITORY_ROOT / "docker" / "README.md").read_text()
+
+    for document in (pyproject, dockerfile, notices, docker_readme):
+        assert SEQATTN_CORE_COMMIT in document
+    assert "seqattn-core[dit,sparse]" in pyproject
+    assert "seqattn-core[dit,sparse]" in dockerfile
+    assert "Package version: `0.4.0a1`" in notices
+
+
 def test_readme_does_not_publish_the_retired_qwen_benchmark():
     readme = (REPOSITORY_ROOT / "README.md").read_text()
 
@@ -95,6 +121,8 @@ def test_release_build_ignores_local_agent_and_archive_state():
         "/.codex/",
         "/.ruff_cache/",
         "/.worktree-archive/",
+        "/ignore/",
         "/outputs/",
         "/sessions/",
+        "/stream-attn-cross/",
     } <= ignored

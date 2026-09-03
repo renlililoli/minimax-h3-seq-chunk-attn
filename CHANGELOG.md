@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.4 - 2026-09-03
+
+- Add deployment-configured streamed Sol attention for MiniMax-H3 through
+  `minimax_h3.attention_mode = "sol_streaming"`, while keeping dense attention
+  as the default and keeping the algorithm choice out of workflow inputs.
+- Resolve the current denoising position from ComfyUI's `sigmas` and complete
+  `sample_sigmas` schedule, including intermediate sampler evaluations, and
+  fail explicitly when Sol is selected without valid schedule metadata.
+- Preserve MiniMax-H3 as one packed self-attention sequence and mark the text,
+  keyframe, and reference-conditioning prefix exact up to the target audio
+  segment for T2VA, FL2VA, and Ref2VA layouts.
+- Pass the real DiT block index through the existing current-plus-next Dynamic
+  VBAR weight schedule so configured dense leading layers and steps are stable.
+- Update to `seqattn-core[dit,sparse]` `0.4.0a1` at immutable commit
+  `d8c51ef1e347d76f237478949679a976d8179bde`, migrate to the new H3 factory and
+  projection APIs, and keep Qwen explicitly dense and materialized.
+- Rename MiniMax-H3 deployment tiles to `projection_tile_tokens` and
+  `ffn_tile_tokens`; the separate Qwen configuration retains its existing
+  `qkv_tile_tokens` and `mlp_tile_tokens` names.
+- Add Ref2VA and FL2VA Sol 4-step LoRA workflow templates with a 15,360-token
+  DiT Q chunk, plus a selectable Docker Sol deployment profile for GPU service
+  validation without changing the dense default configuration.
+
 ## 0.4.3 - 2026-08-28
 
 - Add the dedicated **MiniMax H3 SeqAttn LoRA** node and bundled workflows for

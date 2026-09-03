@@ -13,6 +13,8 @@ dist/
 docker/.env
 extern/
 HANDOFF*.md
+ignore/
 outputs/
 sessions/
+stream-attn-cross/
 workspace/

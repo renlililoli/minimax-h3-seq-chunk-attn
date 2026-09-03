@@ -1,6 +1,7 @@
 # MiniMax H3 SeqAttn for ComfyUI
 
-Exact CPU-backed streaming attention for native ComfyUI MiniMax-H3 models.
+Bounded CPU-backed dense and streamed Sol attention for native ComfyUI
+MiniMax-H3 models.
 
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-0.30.0%20pinned-111827)](#requirements)
 [![Platform](https://img.shields.io/badge/Linux-NVIDIA%20CUDA-76b900)](#requirements)
@@ -20,6 +21,26 @@ denoise steps.
 Supported layouts are T2VA, FL2VA, and Ref2VA. The bundled workflows are
 functional templates for the current Qwen, DiT, and VAE streaming paths; they
 are not performance or maximum-capacity claims.
+
+## Streamed Sol Attention
+
+Dense attention remains the default. Set
+`minimax_h3.attention_mode = "sol_streaming"` in the shared SeqAttn TOML to
+select the approximate streamed Sol algorithm implemented by `seqattn-core`.
+The node does not expose this deployment choice as a workflow input.
+
+The adapter keeps MiniMax-H3's complete packed sequence as one self-attention
+segment. Text, first/last-frame conditioning, and Ref2VA image/video/audio
+references form an exact prefix ending before the target audio segment; target
+audio and video rows are eligible for Sol routing. The current denoising
+position comes from ComfyUI's complete sampler sigma schedule rather than from
+forward-call counting, so CFG and intermediate multistep evaluations do not
+shift the configured dense warmup or leading layers. Missing or inconsistent
+schedule metadata is an error when Sol is selected.
+
+Sol V1 requires CUDA SM80 or newer, Triton, BF16, non-causal self-attention,
+head dimension 128, and equal query/KV head counts. These constraints apply to
+the MiniMax-H3 DiT only. Qwen remains dense and materialized.
 
 The supported ComfyUI baseline is fixed to **version `0.30.0`, commit
 `9a9fdb10ed144ce760d9682cb247526ea23cc525`**. Newer ComfyUI releases are not
@@ -92,8 +113,8 @@ python -m pip install -e .
 ```
 
 No Git submodules are required. Installation resolves the pinned
-`seqattn-core[dit]` `0.3.0a4` runtime directly from its immutable upstream
-commit.
+`seqattn-core[dit,sparse]` `0.4.0a1` runtime directly from its immutable
+upstream commit.
 
 ## Requirements
 
@@ -181,8 +202,10 @@ Import the workflow matching the generation mode:
 | Ref2VA | [`minimax_h3_seqattn_ref2va.json`](workflows/minimax_h3_seqattn_ref2va.json) | Prompt + image/video/audio references |
 | Ref2VA long 2-step validation | [`minimax_h3_seqattn_ref2va_long_2step.json`](workflows/minimax_h3_seqattn_ref2va_long_2step.json) | User-provided 243-frame reference video + audio |
 | FL2VA Turbo 4-step LoRA | [`minimax_h3_seqattn_fl2va_turbo_4step_lora.json`](workflows/minimax_h3_seqattn_fl2va_turbo_4step_lora.json) | Prompt + optional first/last frames |
+| FL2VA Sol Turbo 4-step LoRA | [`minimax_h3_seqattn_fl2va_sol_4step_lora.json`](workflows/minimax_h3_seqattn_fl2va_sol_4step_lora.json) | Prompt + optional first/last frames; Sol-configured service |
 | FL2VA Turbo 8-step LoRA | [`minimax_h3_seqattn_fl2va_turbo_8step_lora.json`](workflows/minimax_h3_seqattn_fl2va_turbo_8step_lora.json) | Prompt + optional first/last frames |
 | Ref2VA Turbo 4-step LoRA | [`minimax_h3_seqattn_ref2va_turbo_4step_lora.json`](workflows/minimax_h3_seqattn_ref2va_turbo_4step_lora.json) | Prompt + image/video/audio references |
+| Ref2VA Sol Turbo 4-step LoRA | [`minimax_h3_seqattn_ref2va_sol_4step_lora.json`](workflows/minimax_h3_seqattn_ref2va_sol_4step_lora.json) | Prompt + image/video/audio references; Sol-configured service |
 
 ### Recent Validation Timings
 
@@ -292,8 +315,12 @@ backend = "auto"
 
 [minimax_h3]
 execution_mode = "materialized" # or "recompute"
-qkv_tile_tokens = 4096
-mlp_tile_tokens = 4096
+attention_mode = "dense" # or "sol_streaming"
+projection_tile_tokens = 4096
+ffn_tile_tokens = 4096
+sol_tau = 1.0
+sol_first_dense_step_fraction = 0.2
+sol_first_dense_layers = 2
 
 [minimax_h3_qwen]
 qkv_tile_tokens = 4096
@@ -304,10 +331,13 @@ tile_size = 192
 workspace_mib = 512
 ```
 
-`minimax_h3.execution_mode` is read when the DiT patch node constructs its
-runtime. `materialized` remains the default; `recompute` is limited to the
-validated INT8 tensorwise ConvRot MiniMax-H3 path. Qwen remains
-materialized-only and does not accept this setting in `[minimax_h3_qwen]`.
+The `[minimax_h3]` table is owned and validated by `seqattn-core` when the DiT
+patch node constructs its runtime. `materialized` remains the default;
+`recompute` is limited to the validated INT8 tensorwise ConvRot MiniMax-H3
+path. `attention_mode = "dense"` is exact; `"sol_streaming"` applies the
+configured leading dense-step fraction and leading dense-layer count before
+using approximate routing. Qwen remains materialized-only and does not accept
+these MiniMax-H3 settings in `[minimax_h3_qwen]`.
 The patch nodes do not impose a whole-process VRAM limit, silently shrink the
 resident query chunk, or fall back to native execution.
 
@@ -318,5 +348,5 @@ Apache-2.0. See [`LICENSE`](LICENSE) and
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 The independent SeqAttn runtime is installed through the pinned
-`seqattn-core[dit]` dependency; this community branch contains only the ComfyUI
-integration and workflows.
+`seqattn-core[dit,sparse]` dependency; this community branch contains only the
+ComfyUI integration and workflows.

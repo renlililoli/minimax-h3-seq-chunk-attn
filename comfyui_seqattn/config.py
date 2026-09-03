@@ -12,7 +12,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 @dataclass(frozen=True)
 class AttentionStageConfig:
-    execution_mode: str = "materialized"
     qkv_tile_tokens: int = 4096
     mlp_tile_tokens: int = 4096
 
@@ -54,25 +53,16 @@ def _positive_int(section: dict, section_name: str, name: str, default: int) -> 
 
 
 def load_attention_stage_config(section_name: str) -> AttentionStageConfig:
-    if section_name not in {"minimax_h3", "minimax_h3_qwen"}:
+    if section_name != "minimax_h3_qwen":
         raise ValueError(f"unsupported SeqAttn stage config: {section_name}")
     defaults = AttentionStageConfig()
     section = _section(_load_document(), section_name)
-    if section_name == "minimax_h3_qwen" and "execution_mode" in section:
+    if "execution_mode" in section:
         raise ValueError(
             "minimax_h3_qwen.execution_mode is unsupported; "
             "Qwen always uses materialized execution"
         )
-    execution_mode = section.get("execution_mode", defaults.execution_mode)
-    if not isinstance(execution_mode, str) or execution_mode not in {
-        "materialized",
-        "recompute",
-    }:
-        raise ValueError(
-            f"{section_name}.execution_mode must be 'materialized' or 'recompute'"
-        )
     return AttentionStageConfig(
-        execution_mode=execution_mode,
         qkv_tile_tokens=_positive_int(
             section, section_name, "qkv_tile_tokens", defaults.qkv_tile_tokens
         ),

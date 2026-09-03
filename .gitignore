@@ -17,5 +17,7 @@ dist/
 # Local leftovers from the development worktree are not part of this branch.
 /comfyui_custom_nodes/
 /extern/
+/ignore/
 /scripts/
+/stream-attn-cross/
 /workspace/

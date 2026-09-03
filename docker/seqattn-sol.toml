@@ -3,7 +3,7 @@ backend = "auto"
 
 [minimax_h3]
 execution_mode = "materialized"
-attention_mode = "dense"
+attention_mode = "sol_streaming"
 projection_tile_tokens = 4096
 ffn_tile_tokens = 4096
 sol_tau = 1.0

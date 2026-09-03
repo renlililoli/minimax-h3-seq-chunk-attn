@@ -49,5 +49,5 @@ services:
       - ${INPUT_DIR}:/opt/ComfyUI/input
       - ${OUTPUT_DIR}:/opt/ComfyUI/output
       - ${USER_DIR}:/opt/ComfyUI/user
-      - ./seqattn.toml:/etc/seqattn/config.toml:ro
+      - ${SEQATTN_CONFIG_FILE:-./seqattn.toml}:/etc/seqattn/config.toml:ro
     restart: unless-stopped

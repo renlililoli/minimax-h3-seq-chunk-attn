@@ -13,8 +13,8 @@ from comfyui_seqattn import runtime as runtime_mod
 
 
 def test_seqattn_dependency_version():
-    assert seqattn_core.__version__ == "0.3.0a4"
-    assert comfyui_seqattn.__version__ == "0.4.3"
+    assert seqattn_core.__version__ == "0.4.0a1"
+    assert comfyui_seqattn.__version__ == "0.4.4"
 
 
 def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
@@ -29,8 +29,12 @@ def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
     config_path.write_text(
         "[minimax_h3]\n"
         "execution_mode = 'recompute'\n"
-        "qkv_tile_tokens = 1024\n"
-        "mlp_tile_tokens = 512\n"
+        "attention_mode = 'sol_streaming'\n"
+        "projection_tile_tokens = 1024\n"
+        "ffn_tile_tokens = 512\n"
+        "sol_tau = 0.75\n"
+        "sol_first_dense_step_fraction = 0.1\n"
+        "sol_first_dense_layers = 3\n"
     )
     monkeypatch.setenv("SEQATTN_CONFIG", str(config_path))
     settings = runtime_mod.SeqAttnSettings.from_config(
@@ -39,9 +43,13 @@ def test_settings_validation_and_toml_tiles(tmp_path, monkeypatch):
     )
     assert settings.q_chunk_tokens == 3840
     assert settings.execution_mode == "recompute"
+    assert settings.attention_mode == "sol_streaming"
     assert settings.kv_chunk_tokens == 4096
-    assert settings.qkv_tile_tokens == 1024
-    assert settings.mlp_tile_tokens == 512
+    assert settings.projection_tile_tokens == 1024
+    assert settings.ffn_tile_tokens == 512
+    assert settings.sol_tau == 0.75
+    assert settings.sol_first_dense_step_fraction == 0.1
+    assert settings.sol_first_dense_layers == 3
 
 
 def test_runtime_clone_isolated_and_clear(monkeypatch):
@@ -49,16 +57,17 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
     created_dit = []
 
     class FakeRunner:
-        def __init__(self, plan, attention_config, pipeline_config):
-            created.append((plan, attention_config, pipeline_config))
+        def __init__(self, plan, pipeline_config):
+            created.append((plan, pipeline_config))
 
-    class FakeMaterializedRunner:
-        def __init__(self, projected, **kwargs):
-            created_dit.append((projected, kwargs))
+    def fake_build_h3_runner(plan, **kwargs):
+        runner = SimpleNamespace(plan=plan, kwargs=kwargs)
+        created_dit.append(runner)
+        return runner
 
     monkeypatch.setattr(runtime_mod, "ProjectedAttentionRunner", FakeRunner)
-    monkeypatch.setattr(runtime_mod, "H3MaterializedRunner", FakeMaterializedRunner)
-    monkeypatch.setattr(runtime_mod, "build_plan", lambda **kwargs: kwargs)
+    monkeypatch.setattr(runtime_mod, "build_h3_runner", fake_build_h3_runner)
+    monkeypatch.setattr(runtime_mod, "build_attention_plan", lambda **kwargs: kwargs)
 
     runtime = runtime_mod.SeqAttnRuntime(runtime_mod.SeqAttnSettings())
     first = runtime.runner_for(
@@ -68,7 +77,7 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         dtype=torch.bfloat16,
         device=torch.device("cuda:0"),
     )
-    assert created[0][1].backend is None
+    assert created[0][0]["config"].backend is None
     assert runtime.runner_for(
         tokens=257,
         heads=4,
@@ -86,7 +95,8 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
         dtype=torch.bfloat16,
         device=torch.device("cuda:0"),
     )
-    assert created[1][1].backend is None
+    assert created_dit[0].plan["config"].backend is None
+    assert created_dit[0].kwargs["config"] == runtime.settings.h3_config()
     assert runtime.dit_runner_for(
         tokens=257,
         hidden_features=256,
@@ -125,23 +135,26 @@ def test_runtime_clone_isolated_and_clear(monkeypatch):
     assert runtime.last_refined_conditioning_cache_stats is None
 
 
-def test_recompute_runtime_constructs_and_caches_recompute_runner(monkeypatch):
-    created_attention = []
-    created_runners = []
+def test_dit_runtime_propagates_and_caches_h3_config(monkeypatch):
+    created = []
 
-    class FakeRecomputedAttention:
-        def __init__(self, plan, **kwargs):
-            created_attention.append((plan, kwargs))
+    def fake_build_h3_runner(plan, **kwargs):
+        runner = SimpleNamespace(plan=plan, kwargs=kwargs)
+        created.append(runner)
+        return runner
 
-    class FakeRecomputeRunner:
-        def __init__(self, attention, **kwargs):
-            created_runners.append((attention, kwargs))
+    monkeypatch.setattr(runtime_mod, "build_h3_runner", fake_build_h3_runner)
+    monkeypatch.setattr(runtime_mod, "build_attention_plan", lambda **kwargs: kwargs)
 
-    monkeypatch.setattr(runtime_mod, "RecomputedAttentionRunner", FakeRecomputedAttention)
-    monkeypatch.setattr(runtime_mod, "H3RecomputeRunner", FakeRecomputeRunner)
-    monkeypatch.setattr(runtime_mod, "build_plan", lambda **kwargs: kwargs)
-
-    settings = runtime_mod.SeqAttnSettings(execution_mode="recompute")
+    settings = runtime_mod.SeqAttnSettings(
+        execution_mode="recompute",
+        attention_mode="sol_streaming",
+        projection_tile_tokens=1024,
+        ffn_tile_tokens=512,
+        sol_tau=0.75,
+        sol_first_dense_step_fraction=0.1,
+        sol_first_dense_layers=3,
+    )
     runtime = runtime_mod.SeqAttnRuntime(settings)
     first = runtime.dit_runner_for(
         tokens=257,
@@ -161,10 +174,10 @@ def test_recompute_runtime_constructs_and_caches_recompute_runner(monkeypatch):
     )
 
     assert first is second
-    assert len(created_attention) == 1
-    assert created_attention[0][1]["require_pinned_hidden"] is True
-    assert len(created_runners) == 1
-    assert created_runners[0][1]["mlp_chunk_tokens"] == settings.mlp_tile_tokens
+    assert len(created) == 1
+    assert created[0].kwargs["hidden_features"] == 256
+    assert created[0].kwargs["num_output_buffers"] == 2
+    assert created[0].kwargs["config"] == settings.h3_config()
     assert runtime.clone().settings.execution_mode == "recompute"
 
 
