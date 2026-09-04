@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.4 - 2026-09-03
+## 0.4.4 - 2026-09-04
 
 - Add deployment-configured streamed Sol attention for MiniMax-H3 through
   `minimax_h3.attention_mode = "sol_streaming"`, while keeping dense attention
@@ -22,6 +22,10 @@
 - Add Ref2VA and FL2VA Sol 4-step LoRA workflow templates with a 15,360-token
   DiT Q chunk, plus a selectable Docker Sol deployment profile for GPU service
   validation without changing the dense default configuration.
+- Preserve sanitized RTX 5090 validation evidence for a 1080p-class FL2VA Sol
+  warm-start run, including separate elapsed time for each denoising step.
+- Add a per-step comparison for two complete 10-second FL2VA Sol runs and two
+  matching Dense runs, while retaining the shared-host benchmarking caveat.
 
 ## 0.4.3 - 2026-08-28
 
